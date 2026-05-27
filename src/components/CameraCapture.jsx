@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { X, Zap } from 'lucide-react';
 
-export default function CameraCapture({ isOpen, onClose, onCapture }) {
+export default function CameraCapture({ isOpen = true, onClose, onCapture }) {
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
   const [stream, setStream] = useState(null);
@@ -42,37 +42,24 @@ export default function CameraCapture({ isOpen, onClose, onCapture }) {
       }
     };
 
-    if (isOpen) {
-      const constraints = {
-        video: {
-            facingMode: { ideal: 'environment' },
-            width: { ideal: 1920 },
-            height: { ideal: 1080 }
-        }
-      };
-      startCamera(constraints);
-    } else {
-      if (activeStream) {
-        activeStream.getTracks().forEach(track => {
-          if (track.readyState === 'live') {
-            if (flashOn && track.applyConstraints) {
-                // Ensure torch is off before stopping
-                track.applyConstraints({ advanced: [{ torch: false }] }).catch(() => {});
-            }
-            track.stop();
-          }
-        });
-        setStream(null);
-        setFlashOn(false);
+    const constraints = {
+      video: {
+          facingMode: { ideal: 'environment' },
+          width: { ideal: 1920 },
+          height: { ideal: 1080 }
       }
-    }
+    };
+    startCamera(constraints);
 
     return () => {
       if (activeStream) {
-        activeStream.getTracks().forEach(track => track.stop());
+        activeStream.getTracks().forEach(track => {
+          try { track.applyConstraints({ advanced: [{ torch: false }] }); } catch(_) {}
+          track.stop();
+        });
       }
     };
-  }, [isOpen, onClose]);
+  }, []);
 
   const toggleFlash = async () => {
     if (!stream) return;
@@ -106,8 +93,6 @@ export default function CameraCapture({ isOpen, onClose, onCapture }) {
     onCapture(dataUrl);
     onClose();
   };
-
-  if (!isOpen) return null;
 
   return (
     <div className="fullscreen-overlay fixed inset-0 bg-black z-[10000] flex flex-col justify-center items-center overflow-hidden">

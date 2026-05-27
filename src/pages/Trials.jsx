@@ -18,6 +18,7 @@ import { calculateDAA } from '../utils/dateUtils.js';
 import { validateEfficacyData } from '../utils/analysisUtils.js';
 import CameraCapture from '../components/CameraCapture.jsx';
 import GridWeedCoverTool from '../components/GridWeedCoverTool.jsx';
+import { analyzePhoto, analyzePhotosBatch } from '../services/multiProviderAI.js';
 import TrialCard from '../components/TrialCard.jsx';
 import {
   generateComprehensivePdf,
@@ -127,6 +128,11 @@ export default function Trials({ onMenuClick }) {
   const [weedIdLoading, setWeedIdLoading] = useState(false);
   const [weedIdResult, setWeedIdResult] = useState(null);
   const weedIdInputRef = useRef(null);
+
+  // --- AI Batch Photo Analysis ---
+  const [aiBatchRunning, setAiBatchRunning] = useState(false);
+  const [aiBatchProgress, setAiBatchProgress] = useState({ current: 0, total: 0, message: '' });
+  const [aiBatchModalOpen, setAiBatchModalOpen] = useState(false);
 
   // --- Bulk QR Card Print ---
   const [isBulkQrModalOpen, setIsBulkQrModalOpen] = useState(false);
@@ -511,18 +517,97 @@ export default function Trials({ onMenuClick }) {
     try { await updateTrial({ ID: updated.ID, EfficacyDataJSON: updated.EfficacyDataJSON }, getAppState); } catch (e) {}
   };
 
+  // Helper for statistics
+  const interpretCV = useCallback((cv) => {
+    if (!isFinite(cv)) return '';
+    if (cv <= 10) return 'Excellent';
+    if (cv <= 20) return 'Good';
+    if (cv <= 30) return 'Acceptable';
+    return 'Poor';
+  }, []);
+
+  const calcStats = useCallback(async () => {
+    if (!detailTrial) return;
+    const efficacy = validateEfficacyData(safeJsonParse(detailTrial.EfficacyDataJSON, []));
+    if (efficacy.length < 2) {
+      window.dispatchEvent(new CustomEvent('app:toast', { detail: { msg: 'Need at least 2 observations to calculate statistics', type: 'error' } }));
+      return;
+    }
+    const sorted = [...efficacy].sort((a, b) => (a.daa ?? 0) - (b.daa ?? 0));
+    const baseline = sorted[0];
+    const baseCover = parseFloat(baseline?.weedCover ?? 100) || 100;
+    const wceRows = sorted.map(obs => {
+      const cover = parseFloat(obs.weedCover ?? 0) || 0;
+      const wce = obs.daa === 0 ? null : (baseCover > 0 ? Math.max(0, Math.min(100, (1 - cover / baseCover) * 100)) : 0);
+      const rating = wce === null ? 'Baseline' : wce >= 85 ? 'Excellent' : wce >= 70 ? 'Good' : wce >= 50 ? 'Fair' : 'Poor';
+      const sp = (obs.weedDetails || []).map(w => w.species).filter(Boolean).join(', ') || (detailTrial.WeedSpecies || 'Mixed');
+      return { species: sp, initialCover: baseCover.toFixed(1), finalCover: cover.toFixed(1), wce: wce !== null ? parseFloat(wce.toFixed(1)) : null, controlRating: rating, daa: obs.daa };
+    });
+    const wces = wceRows.map(r => r.wce).filter(v => v !== null);
+    const meanWce = wces.length ? wces.reduce((s, v) => s + v, 0) / wces.length : 0;
+    const ssTreat = wces.reduce((s, v) => s + Math.pow(v - meanWce, 2), 0);
+    const df = wces.length - 1;
+    const ms = df > 0 ? ssTreat / df : 0;
+    const result = {
+      wce: wceRows,
+      anovaResults: { anovaTable: { treatment: { source: 'Treatment', df, ss: parseFloat(ssTreat.toFixed(2)), ms: parseFloat(ms.toFixed(2)), f: null, p: null, sig: 'N/A' } }, diagnostics: { cv: df > 0 ? parseFloat((100 * Math.sqrt(ms) / (meanWce || 1)).toFixed(2)) : 0, r_squared: df > 0 ? parseFloat((ssTreat / (ssTreat + 0.001)).toFixed(4)) : 0 } },
+      calculatedAt: new Date().toISOString()
+    };
+    const updated = { ...detailTrial, StatisticsJSON: JSON.stringify(result) };
+    updateState({ trials: trials.map(t => t.ID === updated.ID ? updated : t) });
+    setActiveTrial(updated);
+    try { await updateTrial({ ID: updated.ID, StatisticsJSON: updated.StatisticsJSON }, getAppState); } catch(e) {}
+    window.dispatchEvent(new CustomEvent('app:toast', { detail: { msg: 'Statistics calculated', type: 'success' } }));
+  }, [detailTrial, updateState, trials, getAppState]);
+
+  // Stats data parsing
+  const statsData = useMemo(() => {
+    const stats = detailTrial?.StatisticsJSON ? (() => { try { return JSON.parse(detailTrial.StatisticsJSON); } catch(e) { return null; } })() : null;
+    const hasStats = stats && (stats.wce || stats.anovaResults);
+    const renderWces = (stats?.wce || []).map(r => r.wce).filter(v => v !== null && isFinite(v));
+    const renderMeanWce = renderWces.length ? renderWces.reduce((s, v) => s + v, 0) / renderWces.length : 0;
+    return { stats, hasStats, renderWces, renderMeanWce };
+  }, [detailTrial]);
+
   // ── PHOTOS ────────────────────────────────────────────────────────
   const handleCapturePhoto = async (dataUrl) => {
     if (!activeTrial) return;
     setIsCameraOpen(false);
     window.dispatchEvent(new CustomEvent('app:toast', { detail: { msg: 'Photo captured! Saving...', type: 'info' } }));
+
+    const photoDate = new Date().toISOString();
     const photos = safeJsonParse(activeTrial.PhotoURLs, []);
-    photos.push({ fileData: dataUrl, date: new Date().toISOString(), label: cameraMode === 'weed' ? 'Weed Photo' : 'Field Observation', identifications: [] });
+    photos.push({ fileData: dataUrl, date: photoDate, label: cameraMode === 'weed' ? 'Weed Photo' : 'Field Observation', identifications: [] });
     const updated = { ...activeTrial, PhotoURLs: JSON.stringify(photos) };
     updateState({ trials: trials.map(t => t.ID === updated.ID ? updated : t) });
     setActiveTrial(updated);
-    try { await updateTrial({ ID: updated.ID, PhotoURLs: updated.PhotoURLs }, getAppState); }
-    catch (e) { window.dispatchEvent(new CustomEvent('app:toast', { detail: { msg: 'Failed to save photo', type: 'error' } })); }
+
+    try {
+      await updateTrial({ ID: updated.ID, PhotoURLs: updated.PhotoURLs }, getAppState);
+      window.dispatchEvent(new CustomEvent('app:toast', { detail: { msg: 'Photo saved! Starting AI analysis...', type: 'success' } }));
+
+      // AUTO-TRIGGER AI ANALYSIS after capture
+      const trialDate = new Date(activeTrial.Date);
+      const pDate = new Date(photoDate);
+      const daa = Math.max(0, Math.round((pDate.getTime() - trialDate.getTime()) / (1000 * 60 * 60 * 24)));
+
+      const result = await analyzePhoto(dataUrl, {
+        treatment: activeTrial.FormulationName,
+        daa,
+        rep: activeTrial.Replication || 1
+      }, (msg) => {
+        window.dispatchEvent(new CustomEvent('app:toast', { detail: { msg, type: 'info' } }));
+      });
+
+      if (result.success) {
+        await createObservationFromAI(activeTrial, daa, result.data);
+        window.dispatchEvent(new CustomEvent('app:toast', { detail: { msg: `AI complete! Logged ${result.data.weeds?.length || 0} weed species at DAA ${daa}`, type: 'success' } }));
+      } else {
+        window.dispatchEvent(new CustomEvent('app:toast', { detail: { msg: 'AI analysis skipped: ' + result.error, type: 'warning' } }));
+      }
+    } catch (e) {
+      window.dispatchEvent(new CustomEvent('app:toast', { detail: { msg: 'Failed to save photo', type: 'error' } }));
+    }
   };
 
   const handleFileUpload = async (e) => {
@@ -550,6 +635,281 @@ export default function Trials({ onMenuClick }) {
     setObsForm(prev => ({ ...prev, weedCover: coverPct, weedDetails: [{ species: 'Total', cover: coverPct, status: '', notes: 'Measured via grid tool' }] }));
     setEditingObsIdx(null);
     setIsObsModalOpen(true);
+  };
+
+  // ── AI PHOTO ANALYSIS ─────────────────────────────────────────────
+  const createObservationFromAI = async (trial, daa, aiData) => {
+    const efficacyData = validateEfficacyData(safeJsonParse(trial.EfficacyDataJSON, []));
+
+    // Normalize weed data with enhanced fields
+    const normalizedWeeds = (aiData.weeds || []).map(w => ({
+      species: w.species || 'Unknown',
+      cover: typeof w.cover === 'number' ? w.cover : parseFloat(w.cover || 0),
+      status: String(w.status || '').trim(),
+      growthStage: String(w.growthStage || '').trim(),
+      notes: String(w.notes || '').trim()
+    }));
+
+    // Calculate total cover - use AI's totalWeedCover if provided, else sum
+    const totalWeedCover = typeof aiData.totalWeedCover === 'number'
+      ? aiData.totalWeedCover
+      : normalizedWeeds.reduce((sum, w) => sum + (w.cover || 0), 0);
+
+    // Build comprehensive notes
+    const aiNotes = [];
+    if (aiData.efficacyAssessment) aiNotes.push(`Efficacy: ${aiData.efficacyAssessment}`);
+    if (aiData.competitionLevel) aiNotes.push(`Weed Pressure: ${aiData.competitionLevel}`);
+    if (aiData.dominantSpecies) aiNotes.push(`Dominant: ${aiData.dominantSpecies}`);
+    if (aiData.recommendations) aiNotes.push(`Recommendation: ${aiData.recommendations}`);
+    if (aiData.notes) aiNotes.push(aiData.notes);
+
+    const newObs = {
+      date: new Date().toISOString().split('T')[0],
+      daa: Number(daa),
+      weedCover: totalWeedCover,
+      weedDetails: normalizedWeeds.length > 0 ? normalizedWeeds : [{ species: 'No weeds detected', cover: 0, status: '', notes: aiData.notes || 'AI-analyzed' }],
+      notes: aiNotes.join(' | ') || `AI-analyzed on ${new Date().toLocaleDateString()}`,
+      aiConfidence: aiData.confidence || 'MEDIUM',
+      aiEfficacyAssessment: aiData.efficacyAssessment || '',
+      competitionLevel: aiData.competitionLevel || '',
+      status: 'Analyzed',
+      source: 'AI'
+    };
+
+    // Check if observation for this DAA already exists - update if so
+    const existingIdx = efficacyData.findIndex(o => o.daa === Number(daa));
+    if (existingIdx >= 0) {
+      efficacyData[existingIdx] = newObs;
+    } else {
+      efficacyData.push(newObs);
+    }
+    efficacyData.sort((a, b) => a.daa - b.daa);
+
+    // Calculate Result field
+    let resultValue = 0;
+    if (efficacyData.length > 0) {
+      const latestObs = [...efficacyData].sort((a, b) => (parseFloat(b.daa) || 0) - (parseFloat(a.daa) || 0))[0];
+      resultValue = latestObs.weedCover || 0;
+    }
+
+    const updated = {
+      ...trial,
+      EfficacyDataJSON: JSON.stringify(efficacyData),
+      Result: String(resultValue.toFixed(2)),
+      WeedSpecies: normalizedWeeds.length > 0 ? normalizedWeeds.map(w => w.species).join(', ') : 'No weeds detected'
+    };
+
+    updateState({ trials: trials.map(t => t.ID === updated.ID ? updated : t) });
+    if (activeTrial?.ID === trial.ID) setActiveTrial(updated);
+
+    try {
+      await updateTrial({
+        ID: trial.ID,
+        EfficacyDataJSON: updated.EfficacyDataJSON,
+        Result: updated.Result,
+        WeedSpecies: updated.WeedSpecies
+      }, getAppState);
+    } catch (e) {
+      console.error('Failed to save AI observation:', e);
+    }
+  };
+
+  const handleAnalyzeAllPhotos = async (specificTrial = null) => {
+    const targetTrial = specificTrial || activeTrial;
+    if (!targetTrial) return;
+
+    // Get all trials for this project (or just the single trial)
+    const allTrials = targetTrial.ProjectID
+      ? trials.filter(t => t.ProjectID === targetTrial.ProjectID)
+      : [targetTrial];
+
+    // Collect all photos with their DAA calculated from photo date vs trial date
+    const photosToAnalyze = [];
+    const daaCoverageMap = new Map(); // trialId -> Set of DAAs
+
+    allTrials.forEach(trial => {
+      const photos = safeJsonParse(trial.PhotoURLs, []);
+      const existingObs = validateEfficacyData(safeJsonParse(trial.EfficacyDataJSON, []));
+      const existingDAAs = new Set(existingObs.map(o => o.daa));
+      daaCoverageMap.set(trial.ID, existingDAAs);
+
+      const trialDate = new Date(trial.Date);
+
+      photos.forEach((photo, idx) => {
+        const src = photo.fileData || photo.url || photo;
+        if (!src) return;
+
+        // Calculate DAA from photo date
+        let daa = 0;
+        if (photo.date) {
+          const photoDate = new Date(photo.date);
+          daa = Math.round((photoDate.getTime() - trialDate.getTime()) / (1000 * 60 * 60 * 24));
+          daa = daa >= 0 ? daa : 0;
+        }
+
+        photosToAnalyze.push({
+          imageData: src,
+          trialId: trial.ID,
+          treatment: trial.FormulationName,
+          daa,
+          rep: trial.Replication || 1,
+          trialDate: trial.Date,
+          photoDate: photo.date
+        });
+      });
+    });
+
+    if (photosToAnalyze.length === 0) {
+      window.dispatchEvent(new CustomEvent('app:toast', { detail: { msg: 'No photos found to analyze', type: 'warning' } }));
+      return;
+    }
+
+    // Sort photos by date to process chronologically
+    photosToAnalyze.sort((a, b) => new Date(a.photoDate || 0) - new Date(b.photoDate || 0));
+
+    setAiBatchModalOpen(false);
+    setAiBatchRunning(true);
+    setAiBatchProgress({ current: 0, total: photosToAnalyze.length, message: `Analyzing ${photosToAnalyze.length} photos across ${allTrials.length} trials...` });
+
+    const analyzedDAAs = new Map(); // trialId -> Set of DAAs analyzed
+
+    await analyzePhotosBatch(
+      photosToAnalyze,
+      ({ current, total, trialId, message }) => {
+        setAiBatchProgress({ current, total, message });
+      },
+      async ({ trialId, daa, data }) => {
+        const trial = trials.find(t => t.ID === trialId);
+        if (trial) {
+          await createObservationFromAI(trial, daa, data);
+          if (!analyzedDAAs.has(trialId)) analyzedDAAs.set(trialId, new Set());
+          analyzedDAAs.get(trialId).add(daa);
+        }
+      }
+    );
+
+    // Build summary of DAA coverage
+    let summaryMsg = `Complete! ${photosToAnalyze.length} photos analyzed.`;
+    const coverageDetails = [];
+    allTrials.forEach(trial => {
+      const prevDAAs = daaCoverageMap.get(trial.ID) || new Set();
+      const newDAAs = analyzedDAAs.get(trial.ID) || new Set();
+      const addedCount = [...newDAAs].filter(d => !prevDAAs.has(d)).length;
+      const allDAAs = new Set([...prevDAAs, ...newDAAs]);
+      if (addedCount > 0) {
+        coverageDetails.push(`${trial.FormulationName}: ${addedCount} new DAA observations`);
+      }
+    });
+
+    setAiBatchRunning(false);
+    setAiBatchProgress({ current: photosToAnalyze.length, total: photosToAnalyze.length, message: summaryMsg });
+
+    if (coverageDetails.length > 0) {
+      window.dispatchEvent(new CustomEvent('app:toast', { detail: { msg: `${summaryMsg} ${coverageDetails.join(', ')}`, type: 'success' } }));
+    } else {
+      window.dispatchEvent(new CustomEvent('app:toast', { detail: { msg: summaryMsg, type: 'success' } }));
+    }
+
+    setTimeout(() => setAiBatchProgress({ current: 0, total: 0, message: '' }), 5000);
+  };
+
+  const handleAnalyzeSinglePhoto = async (photoSrc, photoDate) => {
+    if (!activeTrial) return;
+    const trialDate = new Date(activeTrial.Date);
+    let daa = 0;
+    if (photoDate) {
+      const pd = new Date(photoDate);
+      daa = Math.round((pd.getTime() - trialDate.getTime()) / (1000 * 60 * 60 * 24));
+      daa = daa >= 0 ? daa : 0;
+    }
+
+    window.dispatchEvent(new CustomEvent('app:toast', { detail: { msg: 'Analyzing photo with AI...', type: 'info' } }));
+    const result = await analyzePhoto(photoSrc, {
+      treatment: activeTrial.FormulationName,
+      daa,
+      rep: activeTrial.Replication || 1
+    });
+
+    if (result.success) {
+      await createObservationFromAI(activeTrial, daa, result.data);
+      window.dispatchEvent(new CustomEvent('app:toast', { detail: { msg: `AI analysis complete! Detected ${result.data.weeds?.length || 0} weed species.`, type: 'success' } }));
+    } else {
+      window.dispatchEvent(new CustomEvent('app:toast', { detail: { msg: 'AI analysis failed: ' + result.error, type: 'error' } }));
+    }
+  };
+
+  // ── AI SUMMARY GENERATION ─────────────────────────────────────────
+  const generateAISummary = async (trial = activeTrial) => {
+    if (!trial) return;
+    const efficacyData = validateEfficacyData(safeJsonParse(trial.EfficacyDataJSON, []));
+    if (efficacyData.length < 2) {
+      window.dispatchEvent(new CustomEvent('app:toast', { detail: { msg: 'Need at least 2 observations to generate summary', type: 'warning' } }));
+      return;
+    }
+
+    window.dispatchEvent(new CustomEvent('app:toast', { detail: { msg: 'Generating AI trial summary...', type: 'info' } }));
+
+    const sorted = [...efficacyData].sort((a, b) => (a.daa ?? 0) - (b.daa ?? 0));
+    const baseline = sorted[0];
+    const latest = sorted[sorted.length - 1];
+    const baseCover = parseFloat(baseline?.weedCover ?? 100) || 100;
+    const finalCover = parseFloat(latest?.weedCover ?? 0) || 0;
+    const wce = baseCover > 0 ? Math.max(0, Math.min(100, (1 - finalCover / baseCover) * 100)) : 0;
+
+    // Collect all unique weed species across all observations
+    const allSpecies = new Set();
+    const speciesControlStatus = {};
+    sorted.forEach(obs => {
+      (obs.weedDetails || []).forEach(wd => {
+        allSpecies.add(wd.species);
+        if (!speciesControlStatus[wd.species]) {
+          speciesControlStatus[wd.species] = { initial: wd.cover, final: wd.cover, status: wd.status };
+        } else {
+          speciesControlStatus[wd.species].final = wd.cover;
+          speciesControlStatus[wd.species].status = wd.status;
+        }
+      });
+    });
+
+    // Build summary text
+    const daysTracked = latest.daa - baseline.daa;
+    const controlRating = wce >= 85 ? 'Excellent' : wce >= 70 ? 'Good' : wce >= 50 ? 'Fair' : 'Poor';
+
+    let summaryText = `**Weed Control Summary**\\n`;
+    summaryText += `Treatment: ${trial.FormulationName || 'Unknown'}\\n`;
+    summaryText += `Duration: ${daysTracked} days (DAA ${baseline.daa} to ${latest.daa})\\n`;
+    summaryText += `Initial Cover: ${baseCover.toFixed(1)}% → Final Cover: ${finalCover.toFixed(1)}%\\n`;
+    summaryText += `Weed Control Efficiency (WCE): ${wce.toFixed(1)}% - ${controlRating} Control\\n\\n`;
+
+    summaryText += `**Species Observed:** ${Array.from(allSpecies).join(', ') || 'None identified'}\\n`;
+    summaryText += `**Control Status by Species:**\\n`;
+    Object.entries(speciesControlStatus).forEach(([sp, data]) => {
+      const spWCE = data.initial > 0 ? ((1 - data.final / data.initial) * 100).toFixed(0) : 0;
+      summaryText += `- ${sp}: ${data.initial}% → ${data.final}% (WCE: ${spWCE}%, Status: ${data.status || 'Unknown'})\\n`;
+    });
+
+    summaryText += `\\n**Conclusion:** `;
+    if (wce >= 85) {
+      summaryText += `The treatment demonstrated excellent weed control efficacy with sustained suppression throughout the trial period.`;
+    } else if (wce >= 70) {
+      summaryText += `The treatment provided good weed control with significant reduction in weed pressure. Continued monitoring recommended.`;
+    } else if (wce >= 50) {
+      summaryText += `Moderate control observed. Consider reapplication or tank-mix options for improved efficacy.`;
+    } else {
+      summaryText += `Limited control observed. Review application timing, rate, or consider alternative chemistry.`;
+    }
+
+    // Update trial with AI-generated conclusion
+    const updated = { ...trial, Conclusion: summaryText };
+    updateState({ trials: trials.map(t => t.ID === updated.ID ? updated : t) });
+    if (activeTrial?.ID === trial.ID) setActiveTrial(updated);
+
+    try {
+      await updateTrial({ ID: trial.ID, Conclusion: summaryText }, getAppState);
+      window.dispatchEvent(new CustomEvent('app:toast', { detail: { msg: 'AI summary generated and saved to Conclusions', type: 'success' } }));
+    } catch (e) {
+      console.error('Failed to save AI summary:', e);
+    }
   };
 
   // ── BULK SELECT ───────────────────────────────────────────────────
@@ -749,6 +1109,36 @@ export default function Trials({ onMenuClick }) {
   const detailEfficacy = detailTrial ? validateEfficacyData(safeJsonParse(detailTrial.EfficacyDataJSON, [])) : [];
   const detailPhotos = detailTrial ? safeJsonParse(detailTrial.PhotoURLs, []) : [];
   const detailIsCompleted = detailTrial?.IsCompleted === true || detailTrial?.IsCompleted === 'true';
+
+  // DAA coverage analysis for photos/observations
+  const daaCoverage = useMemo(() => {
+    if (!activeTrial) return { allDAAs: [], obsDAAs: [], photoDAAs: [], hasGaps: false };
+    const obs = validateEfficacyData(safeJsonParse(activeTrial.EfficacyDataJSON, []));
+    const photoDates = detailPhotos.map(p => p.date ? new Date(p.date) : null).filter(Boolean);
+    const trialDate = activeTrial.Date ? new Date(activeTrial.Date) : null;
+    const photoDAAs = trialDate ? photoDates.map(pd => Math.max(0, Math.round((pd.getTime() - trialDate.getTime()) / (1000 * 60 * 60 * 24)))) : [];
+    const obsDAAs = obs.map(o => o.daa).filter(d => d !== undefined && d !== null);
+    const allDAAs = [...new Set([...obsDAAs, ...photoDAAs])].sort((a, b) => a - b);
+    const maxDAA = allDAAs.length > 0 ? Math.max(...allDAAs) : 0;
+    const hasGaps = maxDAA > 0 && allDAAs.length < maxDAA + 1;
+    return { allDAAs, obsDAAs: [...new Set(obsDAAs)], photoDAAs: [...new Set(photoDAAs)], hasGaps };
+  }, [activeTrial, detailPhotos]);
+
+  // Chart data computation
+  const chartDataComputed = useMemo(() => {
+    const chartData = detailEfficacy.filter(o => o.daa !== undefined);
+    if (chartData.length === 0) return null;
+    const maxDaa = Math.max(...chartData.map(o => o.daa));
+    const maxCover = Math.max(...chartData.map(o => o.weedCover ?? 0), 10);
+    const baseCover = chartData[0]?.weedCover ?? 0;
+    const W = 340, H = 180, PX = 40, PY = 20, PB = 30;
+    const cx = d => PX + (d / (maxDaa || 1)) * (W - PX - 16);
+    const cy = v => PY + (1 - (v / maxCover)) * (H - PY - PB);
+    const pts = chartData.map(o => `${cx(o.daa)},${cy(o.weedCover ?? 0)}`).join(' ');
+    const wcePts = baseCover > 0 ? chartData.map(o => `${cx(o.daa)},${cy((1 - (o.weedCover ?? 0) / baseCover) * maxCover)}`).join(' ') : null;
+    const lastWce = baseCover > 0 ? Math.round((1 - ((chartData[chartData.length-1]?.weedCover ?? 0) / baseCover)) * 100) : null;
+    return { chartData, maxDaa, maxCover, baseCover, W, H, PX, PY, PB, cx, cy, pts, wcePts, lastWce };
+  }, [detailEfficacy]);
 
   // ── QR CODE GENERATOR ─────────────────────────────────────────────
   const generateQR = useCallback(async (trial) => {
@@ -1480,7 +1870,12 @@ Write a professional, concise narrative summary.`;
                           </span>
                         )}
                       </div>
-                      <div className="flex gap-2">
+                      <div className="flex gap-2 flex-wrap">
+                        {sorted.length >= 2 && (
+                          <button onClick={() => generateAISummary()} className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold bg-gradient-to-r from-violet-500 to-purple-500 text-white rounded-lg hover:from-violet-600 hover:to-purple-600 shadow-sm">
+                            <Sparkles className="w-3.5 h-3.5" />Generate AI Summary
+                          </button>
+                        )}
                         <button onClick={() => setIsGridOpen(true)} className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold bg-blue-50 text-blue-700 rounded-lg hover:bg-blue-100">
                           <Grid className="w-3.5 h-3.5" />Grid Tool
                         </button>
@@ -1504,6 +1899,9 @@ Write a professional, concise narrative summary.`;
                                   <span className="bg-slate-700 text-white font-bold px-2 py-1 rounded text-xs">DAA {obs.daa ?? 0}</span>
                                   <span className="text-xs text-slate-500">{obs.date ? new Date(obs.date).toLocaleDateString() : ''}</span>
                                   {wceRating && <span className={`text-xs font-bold px-2 py-0.5 rounded-full ${wceCls}`}>{wceRating}</span>}
+                                  {obs.source === 'AI' && <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-purple-100 text-purple-700 font-semibold">AI</span>}
+                                  {obs.aiConfidence && <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-semibold ${obs.aiConfidence === 'HIGH' ? 'bg-emerald-100 text-emerald-700' : obs.aiConfidence === 'MEDIUM' ? 'bg-amber-100 text-amber-700' : 'bg-red-100 text-red-700'}`}>{obs.aiConfidence}</span>}
+                                  {obs.competitionLevel && <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-blue-100 text-blue-700 font-semibold">{obs.competitionLevel}</span>}
                                 </div>
                                 <div className="flex gap-1 shrink-0">
                                   <button onClick={() => openObsModal(detailEfficacy.indexOf(obs) !== -1 ? detailEfficacy.indexOf(obs) : idx)} className="p-1.5 text-slate-400 hover:text-blue-600 rounded"><Edit className="w-3.5 h-3.5" /></button>
@@ -1531,7 +1929,10 @@ Write a professional, concise narrative summary.`;
                                     {obs.weedDetails.map((wd, wIdx) => (
                                       <div key={wIdx} className="flex items-center justify-between text-xs gap-2">
                                         <span className="text-slate-600 truncate flex-1">{wd.species || 'Unknown'}</span>
-                                        {wd.status && <span className={`px-1.5 py-0.5 rounded text-[10px] font-semibold shrink-0 ${STATUS_CLS[wd.status] || 'bg-slate-100 text-slate-600'}`}>{wd.status}</span>}
+                                        <div className="flex gap-1 shrink-0">
+                                          {wd.growthStage && <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-slate-100 text-slate-600">{wd.growthStage}</span>}
+                                          {wd.status && <span className={`px-1.5 py-0.5 rounded text-[10px] font-semibold ${STATUS_CLS[wd.status] || 'bg-slate-100 text-slate-600'}`}>{wd.status}</span>}
+                                        </div>
                                         <span className="font-bold text-slate-800 shrink-0">{wd.cover}%</span>
                                       </div>
                                     ))}
@@ -1560,6 +1961,12 @@ Write a professional, concise narrative summary.`;
                                 </div>
                               )}
                               {obs.notes && <p className="mt-2 text-xs text-slate-500 italic">"{obs.notes}"</p>}
+                              {obs.aiEfficacyAssessment && (
+                                <div className="mt-2 bg-purple-50 border border-purple-100 rounded-lg p-2">
+                                  <p className="text-[10px] font-bold text-purple-700 uppercase mb-0.5">AI Efficacy Assessment</p>
+                                  <p className="text-xs text-purple-800">{obs.aiEfficacyAssessment}</p>
+                                </div>
+                              )}
                             </div>
                           );
                         })}
@@ -1578,9 +1985,38 @@ Write a professional, concise narrative summary.`;
               {/* Photos Tab */}
               {detailTab === 'photos' && (
                 <div className="space-y-4">
-                  <div className="flex justify-between items-center">
+                  {daaCoverage.allDAAs.length > 0 && (
+                    <div className="bg-slate-50 rounded-xl p-3 border border-slate-200">
+                      <div className="flex items-center justify-between mb-2">
+                        <span className="text-xs font-bold text-slate-700">DAA Coverage Timeline</span>
+                        <span className="text-[10px] text-slate-500">{daaCoverage.obsDAAs.length} obs · {daaCoverage.photoDAAs.length} photos</span>
+                      </div>
+                      <div className="flex flex-wrap gap-1">
+                        {daaCoverage.allDAAs.map(daa => {
+                          const hasObs = daaCoverage.obsDAAs.includes(daa);
+                          const hasPhoto = daaCoverage.photoDAAs.includes(daa);
+                          return (
+                            <div key={daa} className={`px-2 py-1 rounded text-[10px] font-semibold ${
+                              hasObs ? 'bg-emerald-100 text-emerald-700 border border-emerald-200' :
+                              hasPhoto ? 'bg-amber-100 text-amber-700 border border-amber-200' :
+                              'bg-slate-100 text-slate-500'
+                            }`} title={hasObs ? 'Has observation' : 'Has photo, needs AI scan'}>
+                              DAA {daa} {hasObs ? '✓' : hasPhoto ? '📷' : ''}
+                            </div>
+                          );
+                        })}
+                      </div>
+                      {daaCoverage.hasGaps && (
+                        <p className="text-[10px] text-amber-600 mt-2">
+                          ⚠️ Missing DAAs. Click "AI Scan All" to fill gaps.
+                        </p>
+                      )}
+                    </div>
+                  )}
+
+                  <div className="flex justify-between items-center flex-wrap gap-2">
                     <h3 className="font-semibold text-slate-700">Photos ({detailPhotos.length})</h3>
-                    <div className="flex gap-2">
+                    <div className="flex gap-2 flex-wrap">
                       <button onClick={() => fileInputRef.current?.click()} className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold bg-slate-100 text-slate-700 rounded-lg hover:bg-slate-200">
                         <Image className="w-3.5 h-3.5" />Upload
                       </button>
@@ -1589,6 +2025,9 @@ Write a professional, concise narrative summary.`;
                       </button>
                       <button onClick={() => { setCameraMode('general'); setIsCameraOpen(true); }} className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold bg-blue-600 text-white rounded-lg hover:bg-blue-700">
                         <Camera className="w-3.5 h-3.5" />Camera
+                      </button>
+                      <button onClick={() => setAiBatchModalOpen(true)} className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold bg-gradient-to-r from-purple-500 to-pink-500 text-white rounded-lg hover:from-purple-600 hover:to-pink-600 shadow-lg">
+                        <Sparkles className="w-3.5 h-3.5" />AI Scan All
                       </button>
                     </div>
                   </div>
@@ -1601,7 +2040,11 @@ Write a professional, concise narrative summary.`;
                           <div key={idx} className="relative group rounded-xl overflow-hidden bg-slate-100">
                             <img src={src} alt={`Photo ${idx + 1}`} className="w-full aspect-square object-cover" />
                             <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition flex flex-col justify-between p-2">
-                              <div className="flex justify-end gap-1">
+                              <div className="flex justify-end gap-1 flex-wrap">
+                                <button onClick={() => handleAnalyzeSinglePhoto(src, photo.date)} title="AI Full Scan & Log"
+                                  className="p-1.5 bg-gradient-to-r from-purple-500 to-pink-500 backdrop-blur rounded-lg text-white hover:from-purple-600 hover:to-pink-600">
+                                  <Sparkles className="w-3.5 h-3.5" />
+                                </button>
                                 <button onClick={() => identifyWeedFromPhoto(src)} title="AI Weed ID"
                                   className="p-1.5 bg-emerald-500/80 backdrop-blur rounded-lg text-white hover:bg-emerald-600">
                                   <Leaf className="w-3.5 h-3.5" />
@@ -1723,214 +2166,146 @@ Write a professional, concise narrative summary.`;
               )}
 
               {/* Chart Tab */}
-              {detailTab === 'chart' && (() => {
-                const chartData = detailEfficacy.filter(o => o.daa !== undefined);
-                if (chartData.length === 0) return (
-                  <div className="text-center py-12 text-slate-400">
-                    <TrendingDown className="w-10 h-10 mx-auto mb-3 opacity-30" />
-                    <p>No observation data to chart</p>
-                  </div>
-                );
-                const maxDaa = Math.max(...chartData.map(o => o.daa));
-                const maxCover = Math.max(...chartData.map(o => o.weedCover ?? 0), 10);
-                const baseCover = chartData[0]?.weedCover ?? 0;
-                const W = 340, H = 180, PX = 40, PY = 20, PB = 30;
-                const cx = d => PX + (d / (maxDaa || 1)) * (W - PX - 16);
-                const cy = v => PY + (1 - (v / maxCover)) * (H - PY - PB);
-                const pts = chartData.map(o => `${cx(o.daa)},${cy(o.weedCover ?? 0)}`).join(' ');
-                // WCE% line: 100*(1 - cover/baseCover), scaled to chart Y
-                const wcePts = baseCover > 0
-                  ? chartData.map(o => `${cx(o.daa)},${cy((1 - (o.weedCover ?? 0) / baseCover) * maxCover)}`).join(' ')
-                  : null;
-                const lastWce = baseCover > 0 ? Math.round((1 - ((chartData[chartData.length-1]?.weedCover ?? 0) / baseCover)) * 100) : null;
-                return (
-                  <div>
-                    <h3 className="font-semibold text-slate-700 mb-3">Weed Cover &amp; WCE% Timeline</h3>
-                    <div className="bg-white border rounded-xl p-3 overflow-x-auto">
-                      <div className="flex gap-4 text-xs mb-2">
-                        <span className="flex items-center gap-1"><span className="inline-block w-3 h-1 bg-emerald-500 rounded" />Weed Cover %</span>
-                        {wcePts && <span className="flex items-center gap-1"><span className="inline-block w-3 h-1 bg-indigo-400 rounded" style={{borderTop:'2px dashed #818cf8'}} />WCE %</span>}
-                      </div>
-                      <svg width={W} height={H} className="w-full" viewBox={`0 0 ${W} ${H}`}>
-                        {[0,25,50,75,100].filter(v => v <= maxCover + 5).map(v => (
-                          <g key={v}>
-                            <line x1={PX} y1={cy(v)} x2={W-16} y2={cy(v)} stroke="#e2e8f0" strokeWidth="1" />
-                            <text x={PX-4} y={cy(v)+4} fontSize="9" fill="#94a3b8" textAnchor="end">{v}%</text>
-                          </g>
-                        ))}
-                        {/* Cover Line */}
-                        <polyline points={pts} fill="none" stroke="#10b981" strokeWidth="2.5" strokeLinejoin="round" />
-                        {/* WCE dashed line */}
-                        {wcePts && <polyline points={wcePts} fill="none" stroke="#818cf8" strokeWidth="2" strokeDasharray="5,3" strokeLinejoin="round" />}
-                        {/* Dots */}
-                        {chartData.map((o, i) => (
-                          <g key={i}>
-                            <circle cx={cx(o.daa)} cy={cy(o.weedCover ?? 0)} r="4" fill="#10b981" stroke="white" strokeWidth="1.5" />
-                            <text x={cx(o.daa)} y={H - 8} fontSize="9" fill="#64748b" textAnchor="middle">{o.daa}</text>
-                          </g>
-                        ))}
-                        <line x1={PX} y1={PY} x2={PX} y2={H-PB} stroke="#cbd5e1" strokeWidth="1.5" />
-                        <line x1={PX} y1={H-PB} x2={W-16} y2={H-PB} stroke="#cbd5e1" strokeWidth="1.5" />
-                        <text x={W/2} y={H} fontSize="9" fill="#94a3b8" textAnchor="middle">Days After Application</text>
-                      </svg>
+              {detailTab === 'chart' && (chartDataComputed ? (
+                <div>
+                  <h3 className="font-semibold text-slate-700 mb-3">Weed Cover &amp; WCE% Timeline</h3>
+                  <div className="bg-white border rounded-xl p-3 overflow-x-auto">
+                    <div className="flex gap-4 text-xs mb-2">
+                      <span className="flex items-center gap-1"><span className="inline-block w-3 h-1 bg-emerald-500 rounded" />Weed Cover %</span>
+                      {chartDataComputed.wcePts && <span className="flex items-center gap-1"><span className="inline-block w-3 h-1 bg-indigo-400 rounded" style={{borderTop:'2px dashed #818cf8'}} />WCE %</span>}
                     </div>
-                    <div className="mt-3 grid grid-cols-4 gap-2">
-                      {[
-                        ['First Cover',`${chartData[0]?.weedCover ?? '—'}%`,'bg-blue-50 text-blue-700'],
-                        ['Last Cover',`${chartData[chartData.length-1]?.weedCover ?? '—'}%`,'bg-emerald-50 text-emerald-700'],
-                        ['Final WCE', lastWce !== null ? `${lastWce}%` : '—','bg-indigo-50 text-indigo-700'],
-                        ['Observations',chartData.length,'bg-slate-50 text-slate-700']
-                      ].map(([l,v,cls]) => (
-                        <div key={l} className={`rounded-lg p-2 text-center ${cls}`}><p className="text-xs font-bold opacity-70">{l}</p><p className="text-lg font-bold">{v}</p></div>
+                    <svg width={chartDataComputed.W} height={chartDataComputed.H} className="w-full" viewBox={`0 0 ${chartDataComputed.W} ${chartDataComputed.H}`}>
+                      {[0,25,50,75,100].filter(v => v <= chartDataComputed.maxCover + 5).map(v => (
+                        <g key={v}>
+                          <line x1={chartDataComputed.PX} y1={chartDataComputed.cy(v)} x2={chartDataComputed.W-16} y2={chartDataComputed.cy(v)} stroke="#e2e8f0" strokeWidth="1" />
+                          <text x={chartDataComputed.PX-4} y={chartDataComputed.cy(v)+4} fontSize="9" fill="#94a3b8" textAnchor="end">{v}%</text>
+                        </g>
                       ))}
-                    </div>
+                      <polyline points={chartDataComputed.pts} fill="none" stroke="#10b981" strokeWidth="2.5" strokeLinejoin="round" />
+                      {chartDataComputed.wcePts && <polyline points={chartDataComputed.wcePts} fill="none" stroke="#818cf8" strokeWidth="2" strokeDasharray="5,3" strokeLinejoin="round" />}
+                      {chartDataComputed.chartData.map((o, i) => (
+                        <g key={i}>
+                          <circle cx={chartDataComputed.cx(o.daa)} cy={chartDataComputed.cy(o.weedCover ?? 0)} r="4" fill="#10b981" stroke="white" strokeWidth="1.5" />
+                          <text x={chartDataComputed.cx(o.daa)} y={chartDataComputed.H - 8} fontSize="9" fill="#64748b" textAnchor="middle">{o.daa}</text>
+                        </g>
+                      ))}
+                      <line x1={chartDataComputed.PX} y1={chartDataComputed.PY} x2={chartDataComputed.PX} y2={chartDataComputed.H-chartDataComputed.PB} stroke="#cbd5e1" strokeWidth="1.5" />
+                      <line x1={chartDataComputed.PX} y1={chartDataComputed.H-chartDataComputed.PB} x2={chartDataComputed.W-16} y2={chartDataComputed.H-chartDataComputed.PB} stroke="#cbd5e1" strokeWidth="1.5" />
+                      <text x={chartDataComputed.W/2} y={chartDataComputed.H} fontSize="9" fill="#94a3b8" textAnchor="middle">Days After Application</text>
+                    </svg>
                   </div>
-                );
-              })()}
+                  <div className="mt-3 grid grid-cols-4 gap-2">
+                    {[
+                      ['First Cover',`${chartDataComputed.chartData[0]?.weedCover ?? '—'}%`,'bg-blue-50 text-blue-700'],
+                      ['Last Cover',`${chartDataComputed.chartData[chartDataComputed.chartData.length-1]?.weedCover ?? '—'}%`,'bg-emerald-50 text-emerald-700'],
+                      ['Final WCE', chartDataComputed.lastWce !== null ? `${chartDataComputed.lastWce}%` : '—','bg-indigo-50 text-indigo-700'],
+                      ['Observations',chartDataComputed.chartData.length,'bg-slate-50 text-slate-700']
+                    ].map(([l,v,cls]) => (
+                      <div key={l} className={`rounded-lg p-2 text-center ${cls}`}><p className="text-xs font-bold opacity-70">{l}</p><p className="text-lg font-bold">{v}</p></div>
+                    ))}
+                  </div>
+                </div>
+              ) : (
+                <div className="text-center py-12 text-slate-400">
+                  <TrendingDown className="w-10 h-10 mx-auto mb-3 opacity-30" />
+                  <p>No observation data to chart</p>
+                </div>
+              ))}
 
               {/* Statistics Tab */}
-              {detailTab === 'statistics' && (() => {
-                const stats = detailTrial?.StatisticsJSON ? (() => { try { return JSON.parse(detailTrial.StatisticsJSON); } catch(e) { return null; } })() : null;
-                const hasStats = stats && (stats.wce || stats.anovaResults);
-                const interpretCV = (cv) => {
-                  if (!isFinite(cv)) return '';
-                  if (cv <= 10) return 'Excellent';
-                  if (cv <= 20) return 'Good';
-                  if (cv <= 30) return 'Acceptable';
-                  return 'Poor';
-                };
-
-                const calcStats = async () => {
-                  if (!detailTrial) return;
-                  const efficacy = validateEfficacyData(safeJsonParse(detailTrial.EfficacyDataJSON, []));
-                  if (efficacy.length < 2) {
-                    window.dispatchEvent(new CustomEvent('app:toast', { detail: { msg: 'Need at least 2 observations to calculate statistics', type: 'error' } }));
-                    return;
-                  }
-                  const sorted = [...efficacy].sort((a, b) => (a.daa ?? 0) - (b.daa ?? 0));
-                  const baseline = sorted[0];
-                  const baseCover = parseFloat(baseline?.weedCover ?? 100) || 100;
-                  const wceRows = sorted.map(obs => {
-                    const cover = parseFloat(obs.weedCover ?? 0) || 0;
-                    const wce = obs.daa === 0 ? null : (baseCover > 0 ? Math.max(0, Math.min(100, (1 - cover / baseCover) * 100)) : 0);
-                    const rating = wce === null ? 'Baseline' : wce >= 85 ? 'Excellent' : wce >= 70 ? 'Good' : wce >= 50 ? 'Fair' : 'Poor';
-                    const sp = (obs.weedDetails || []).map(w => w.species).filter(Boolean).join(', ') || (detailTrial.WeedSpecies || 'Mixed');
-                    return { species: sp, initialCover: baseCover.toFixed(1), finalCover: cover.toFixed(1), wce: wce !== null ? parseFloat(wce.toFixed(1)) : null, controlRating: rating, daa: obs.daa };
-                  });
-                  const wces = wceRows.map(r => r.wce).filter(v => v !== null);
-                  const meanWce = wces.length ? wces.reduce((s, v) => s + v, 0) / wces.length : 0;
-                  const ssTreat = wces.reduce((s, v) => s + Math.pow(v - meanWce, 2), 0);
-                  const df = wces.length - 1;
-                  const ms = df > 0 ? ssTreat / df : 0;
-                  const result = {
-                    wce: wceRows,
-                    anovaResults: { anovaTable: { treatment: { source: 'Treatment', df, ss: parseFloat(ssTreat.toFixed(2)), ms: parseFloat(ms.toFixed(2)), f: null, p: null, sig: 'N/A' } }, diagnostics: { cv: df > 0 ? parseFloat((100 * Math.sqrt(ms) / (meanWce || 1)).toFixed(2)) : 0, r_squared: df > 0 ? parseFloat((ssTreat / (ssTreat + 0.001)).toFixed(4)) : 0 } },
-                    calculatedAt: new Date().toISOString()
-                  };
-                  const updated = { ...detailTrial, StatisticsJSON: JSON.stringify(result) };
-                  updateState({ trials: trials.map(t => t.ID === updated.ID ? updated : t) });
-                  setActiveTrial(updated);
-                  try { await updateTrial({ ID: updated.ID, StatisticsJSON: updated.StatisticsJSON }, getAppState); } catch(e) {}
-                  window.dispatchEvent(new CustomEvent('app:toast', { detail: { msg: 'Statistics calculated', type: 'success' } }));
-                };
-
-                const renderWces = (stats?.wce || []).map(r => r.wce).filter(v => v !== null && isFinite(v));
-                const renderMeanWce = renderWces.length ? renderWces.reduce((s, v) => s + v, 0) / renderWces.length : 0;
-
-                return (
-                  <div className="space-y-4">
-                    <div className="flex items-center justify-between">
-                      <h3 className="font-semibold text-slate-700">Trial Statistics</h3>
-                      <button onClick={calcStats} className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold bg-emerald-600 text-white rounded-lg hover:bg-emerald-700">
-                        <RefreshCw className="w-3.5 h-3.5" /> Calculate Statistics
-                      </button>
-                    </div>
-                    {!hasStats ? (
-                      <div className="text-center py-12 text-slate-400 border-2 border-dashed rounded-xl">
-                        <BarChart3 className="w-10 h-10 mx-auto mb-3 opacity-30" />
-                        <p>No statistical data yet</p>
-                        <p className="text-xs mt-1">Click Calculate Statistics to compute WCE and ANOVA from observations</p>
-                      </div>
-                    ) : (
-                      <div className="space-y-5">
-                        {stats.wce && stats.wce.length > 0 && (
-                          <div>
-                            <h4 className="text-sm font-bold text-slate-700 mb-2">Weed Control Efficiency — Per Observation</h4>
-                            <div className="overflow-x-auto rounded-xl border">
-                              <table className="min-w-full text-xs divide-y divide-slate-200">
-                                <thead className="bg-slate-50"><tr>{['DAA','Species','Cover %','WCE %','Rating'].map(h => <th key={h} className="px-3 py-2 text-left font-semibold text-slate-500 uppercase text-[10px]">{h}</th>)}</tr></thead>
-                                <tbody className="divide-y divide-slate-100 bg-white">
-                                  {stats.wce.map((w, i) => (
-                                    <tr key={i} className={w.controlRating === 'Baseline' ? 'bg-slate-50' : ''}>
-                                      <td className="px-3 py-2 font-bold text-slate-600">{w.daa ?? 0}</td>
-                                      <td className="px-3 py-2 font-medium text-slate-700 truncate max-w-[100px]">{w.species}</td>
-                                      <td className="px-3 py-2 text-slate-500">{w.finalCover}%</td>
-                                      <td className={`px-3 py-2 font-bold ${w.wce === null ? 'text-slate-400' : w.wce >= 80 ? 'text-emerald-600' : 'text-amber-600'}`}>{w.wce !== null ? `${w.wce.toFixed(1)}%` : '—'}</td>
-                                      <td className="px-3 py-2"><span className={`px-2 py-0.5 rounded text-[10px] font-semibold ${w.controlRating === 'Baseline' ? 'bg-slate-200 text-slate-600' : w.controlRating === 'Excellent' ? 'bg-emerald-100 text-emerald-800' : w.controlRating === 'Good' ? 'bg-blue-100 text-blue-800' : w.controlRating === 'Fair' ? 'bg-amber-100 text-amber-800' : 'bg-red-100 text-red-800'}`}>{w.controlRating}</span></td>
-                                    </tr>
-                                  ))}
-                                </tbody>
-                              </table>
-                            </div>
-                          </div>
-                        )}
-                        {stats.anovaResults?.anovaTable && (
-                          <div>
-                            <h4 className="text-sm font-bold text-slate-700 mb-2 flex items-center gap-2">ANOVA Results <span className="text-[10px] font-normal text-slate-400">Computed: {new Date(stats.calculatedAt).toLocaleDateString()}</span></h4>
-                            <div className="overflow-x-auto rounded-xl border">
-                              <table className="min-w-full text-xs divide-y divide-slate-200">
-                                <thead className="bg-slate-50"><tr>{['Source','DF','SS','MS','F','P > F','Sig'].map(h => <th key={h} className="px-3 py-2 text-left font-semibold text-slate-500 uppercase text-[10px]">{h}</th>)}</tr></thead>
-                                <tbody className="divide-y divide-slate-100 bg-white">
-                                  {[stats.anovaResults.anovaTable.treatment, stats.anovaResults.anovaTable.block, stats.anovaResults.anovaTable.error, stats.anovaResults.anovaTable.total].filter(Boolean).map((row, i) => (
-                                    <tr key={i}>
-                                      <td className="px-3 py-2 font-medium text-slate-700">{row.source}</td>
-                                      <td className="px-3 py-2 text-slate-500">{row.df}</td>
-                                      <td className="px-3 py-2 text-slate-500">{Number.isFinite(row.ss) ? row.ss.toFixed(2) : ''}</td>
-                                      <td className="px-3 py-2 text-slate-500">{Number.isFinite(row.ms) ? row.ms.toFixed(2) : ''}</td>
-                                      <td className="px-3 py-2 text-slate-500">{Number.isFinite(row.f) ? row.f.toFixed(2) : '—'}</td>
-                                      <td className="px-3 py-2 text-slate-500">{Number.isFinite(row.p) ? row.p.toFixed(4) : '—'}</td>
-                                      <td className="px-3 py-2 font-bold text-slate-700">{row.sig || '—'}</td>
-                                    </tr>
-                                  ))}
-                                </tbody>
-                              </table>
-                            </div>
-                            <div className="mt-2 grid grid-cols-3 gap-3">
-                              <div className="bg-slate-50 rounded-lg p-2 text-xs">
-                                <span className="font-semibold text-slate-500">CV: </span>
-                                <span className="font-bold text-slate-700">{Number.isFinite(stats.anovaResults.diagnostics?.cv) ? stats.anovaResults.diagnostics.cv.toFixed(2) : '—'}%</span>
-                                {Number.isFinite(stats.anovaResults.diagnostics?.cv) && <span className={`ml-1 text-[10px] font-semibold ${ stats.anovaResults.diagnostics.cv <= 10 ? 'text-emerald-600' : stats.anovaResults.diagnostics.cv <= 20 ? 'text-blue-600' : stats.anovaResults.diagnostics.cv <= 30 ? 'text-amber-600' : 'text-red-600' }`}>({interpretCV(stats.anovaResults.diagnostics.cv)})</span>}
-                              </div>
-                              <div className="bg-slate-50 rounded-lg p-2 text-xs"><span className="font-semibold text-slate-500">R²: </span><span className="font-bold text-slate-700">{Number.isFinite(stats.anovaResults.diagnostics?.r_squared) ? stats.anovaResults.diagnostics.r_squared.toFixed(4) : '—'}</span></div>
-                              <div className="bg-slate-50 rounded-lg p-2 text-xs"><span className="font-semibold text-slate-500">Mean WCE: </span><span className="font-bold text-slate-700">{renderWces.length ? renderMeanWce.toFixed(1) : '—'}%</span></div>
-                            </div>
-                          </div>
-                        )}
-                        {stats.lsdResults?.groupings && (
-                          <div>
-                            <h4 className="text-sm font-bold text-slate-700 mb-2">Fisher's LSD Groupings</h4>
-                            <p className="text-xs text-slate-400 mb-2">Alpha = {stats.lsdResults.alpha}, LSD = {Number.isFinite(stats.lsdResults.lsd) ? stats.lsdResults.lsd.toFixed(2) : '—'}</p>
-                            <div className="overflow-x-auto rounded-xl border">
-                              <table className="min-w-full text-xs divide-y divide-slate-200">
-                                <thead className="bg-slate-50"><tr>{['Treatment','Mean WCE','Group'].map(h => <th key={h} className="px-3 py-2 text-left font-semibold text-slate-500 uppercase text-[10px]">{h}</th>)}</tr></thead>
-                                <tbody className="divide-y divide-slate-100 bg-white">
-                                  {stats.lsdResults.groupings.map((g, i) => (
-                                    <tr key={i}>
-                                      <td className="px-3 py-2 font-medium text-slate-700">{g.name}</td>
-                                      <td className="px-3 py-2 text-slate-500">{Number.isFinite(g.mean) ? g.mean.toFixed(2) : '—'}%</td>
-                                      <td className="px-3 py-2 font-bold text-blue-700">{g.grouping || '—'}</td>
-                                    </tr>
-                                  ))}
-                                </tbody>
-                              </table>
-                            </div>
-                          </div>
-                        )}
-                      </div>
-                    )}
+              {detailTab === 'statistics' && (
+                <div className="space-y-4">
+                  <div className="flex items-center justify-between">
+                    <h3 className="font-semibold text-slate-700">Trial Statistics</h3>
+                    <button onClick={calcStats} className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold bg-emerald-600 text-white rounded-lg hover:bg-emerald-700">
+                      <RefreshCw className="w-3.5 h-3.5" /> Calculate Statistics
+                    </button>
                   </div>
-                );
-              })()}
+                  {!statsData.hasStats ? (
+                    <div className="text-center py-12 text-slate-400 border-2 border-dashed rounded-xl">
+                      <BarChart3 className="w-10 h-10 mx-auto mb-3 opacity-30" />
+                      <p>No statistical data yet</p>
+                      <p className="text-xs mt-1">Click Calculate Statistics to compute WCE and ANOVA from observations</p>
+                    </div>
+                  ) : (
+                    <div className="space-y-5">
+                      {statsData.stats?.wce && statsData.stats.wce.length > 0 && (
+                        <div>
+                          <h4 className="text-sm font-bold text-slate-700 mb-2">Weed Control Efficiency — Per Observation</h4>
+                          <div className="overflow-x-auto rounded-xl border">
+                            <table className="min-w-full text-xs divide-y divide-slate-200">
+                              <thead className="bg-slate-50"><tr>{['DAA','Species','Cover %','WCE %','Rating'].map(h => <th key={h} className="px-3 py-2 text-left font-semibold text-slate-500 uppercase text-[10px]">{h}</th>)}</tr></thead>
+                              <tbody className="divide-y divide-slate-100 bg-white">
+                                {statsData.stats.wce.map((w, i) => (
+                                  <tr key={i} className={w.controlRating === 'Baseline' ? 'bg-slate-50' : ''}>
+                                    <td className="px-3 py-2 font-bold text-slate-600">{w.daa ?? 0}</td>
+                                    <td className="px-3 py-2 font-medium text-slate-700 truncate max-w-[100px]">{w.species}</td>
+                                    <td className="px-3 py-2 text-slate-500">{w.finalCover}%</td>
+                                    <td className={`px-3 py-2 font-bold ${w.wce === null ? 'text-slate-400' : w.wce >= 80 ? 'text-emerald-600' : 'text-amber-600'}`}>{w.wce !== null ? `${w.wce.toFixed(1)}%` : '—'}</td>
+                                    <td className="px-3 py-2"><span className={`px-2 py-0.5 rounded text-[10px] font-semibold ${w.controlRating === 'Baseline' ? 'bg-slate-200 text-slate-600' : w.controlRating === 'Excellent' ? 'bg-emerald-100 text-emerald-800' : w.controlRating === 'Good' ? 'bg-blue-100 text-blue-800' : w.controlRating === 'Fair' ? 'bg-amber-100 text-amber-800' : 'bg-red-100 text-red-800'}`}>{w.controlRating}</span></td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        </div>
+                      )}
+                      {statsData.stats?.anovaResults?.anovaTable && (
+                        <div>
+                          <h4 className="text-sm font-bold text-slate-700 mb-2 flex items-center gap-2">ANOVA Results <span className="text-[10px] font-normal text-slate-400">Computed: {new Date(statsData.stats.calculatedAt).toLocaleDateString()}</span></h4>
+                          <div className="overflow-x-auto rounded-xl border">
+                            <table className="min-w-full text-xs divide-y divide-slate-200">
+                              <thead className="bg-slate-50"><tr>{['Source','DF','SS','MS','F','P > F','Sig'].map(h => <th key={h} className="px-3 py-2 text-left font-semibold text-slate-500 uppercase text-[10px]">{h}</th>)}</tr></thead>
+                              <tbody className="divide-y divide-slate-100 bg-white">
+                                {[statsData.stats.anovaResults.anovaTable.treatment, statsData.stats.anovaResults.anovaTable.block, statsData.stats.anovaResults.anovaTable.error, statsData.stats.anovaResults.anovaTable.total].filter(Boolean).map((row, i) => (
+                                  <tr key={i}>
+                                    <td className="px-3 py-2 font-medium text-slate-700">{row.source}</td>
+                                    <td className="px-3 py-2 text-slate-500">{row.df}</td>
+                                    <td className="px-3 py-2 text-slate-500">{Number.isFinite(row.ss) ? row.ss.toFixed(2) : ''}</td>
+                                    <td className="px-3 py-2 text-slate-500">{Number.isFinite(row.ms) ? row.ms.toFixed(2) : ''}</td>
+                                    <td className="px-3 py-2 text-slate-500">{Number.isFinite(row.f) ? row.f.toFixed(2) : '—'}</td>
+                                    <td className="px-3 py-2 text-slate-500">{Number.isFinite(row.p) ? row.p.toFixed(4) : '—'}</td>
+                                    <td className="px-3 py-2 font-bold text-slate-700">{row.sig || '—'}</td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                          <div className="mt-2 grid grid-cols-3 gap-3">
+                            <div className="bg-slate-50 rounded-lg p-2 text-xs">
+                              <span className="font-semibold text-slate-500">CV: </span>
+                              <span className="font-bold text-slate-700">{Number.isFinite(statsData.stats.anovaResults.diagnostics?.cv) ? statsData.stats.anovaResults.diagnostics.cv.toFixed(2) : '—'}%</span>
+                              {Number.isFinite(statsData.stats.anovaResults.diagnostics?.cv) && <span className={`ml-1 text-[10px] font-semibold ${ statsData.stats.anovaResults.diagnostics.cv <= 10 ? 'text-emerald-600' : statsData.stats.anovaResults.diagnostics.cv <= 20 ? 'text-blue-600' : statsData.stats.anovaResults.diagnostics.cv <= 30 ? 'text-amber-600' : 'text-red-600' }`}>({interpretCV(statsData.stats.anovaResults.diagnostics.cv)})</span>}
+                            </div>
+                            <div className="bg-slate-50 rounded-lg p-2 text-xs"><span className="font-semibold text-slate-500">R²: </span><span className="font-bold text-slate-700">{Number.isFinite(statsData.stats.anovaResults.diagnostics?.r_squared) ? statsData.stats.anovaResults.diagnostics.r_squared.toFixed(4) : '—'}</span></div>
+                            <div className="bg-slate-50 rounded-lg p-2 text-xs"><span className="font-semibold text-slate-500">Mean WCE: </span><span className="font-bold text-slate-700">{statsData.renderWces.length ? statsData.renderMeanWce.toFixed(1) : '—'}%</span></div>
+                          </div>
+                        </div>
+                      )}
+                      {statsData.stats?.lsdResults?.groupings && (
+                        <div>
+                          <h4 className="text-sm font-bold text-slate-700 mb-2">Fisher's LSD Groupings</h4>
+                          <p className="text-xs text-slate-400 mb-2">Alpha = {statsData.stats.lsdResults.alpha}, LSD = {Number.isFinite(statsData.stats.lsdResults.lsd) ? statsData.stats.lsdResults.lsd.toFixed(2) : '—'}</p>
+                          <div className="overflow-x-auto rounded-xl border">
+                            <table className="min-w-full text-xs divide-y divide-slate-200">
+                              <thead className="bg-slate-50"><tr>{['Treatment','Mean WCE','Group'].map(h => <th key={h} className="px-3 py-2 text-left font-semibold text-slate-500 uppercase text-[10px]">{h}</th>)}</tr></thead>
+                              <tbody className="divide-y divide-slate-100 bg-white">
+                                {statsData.stats.lsdResults.groupings.map((g, i) => (
+                                  <tr key={i}>
+                                    <td className="px-3 py-2 font-medium text-slate-700">{g.name}</td>
+                                    <td className="px-3 py-2 text-slate-500">{Number.isFinite(g.mean) ? g.mean.toFixed(2) : '—'}%</td>
+                                    <td className="px-3 py-2 font-bold text-blue-700">{g.grouping || '—'}</td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
 
               {/* QR Code Tab */}
               {detailTab === 'qr' && (
@@ -2168,6 +2543,67 @@ Write a professional, concise narrative summary.`;
               })()}
             </div>
           </div>
+        </div>
+      )}
+
+      {/* ── AI BATCH ANALYSIS MODAL ── */}
+      {aiBatchModalOpen && (
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl">
+            <div className="flex items-center gap-3 mb-4">
+              <div className="w-10 h-10 rounded-full bg-gradient-to-r from-purple-500 to-pink-500 flex items-center justify-center">
+                <Sparkles className="w-5 h-5 text-white" />
+              </div>
+              <div>
+                <h3 className="font-bold text-slate-800">AI Photo Analysis</h3>
+                <p className="text-xs text-slate-500">Automatically scan all trial photos</p>
+              </div>
+            </div>
+
+            <div className="bg-slate-50 rounded-xl p-4 mb-4">
+              <p className="text-sm text-slate-700 mb-2">This will analyze all photos using AI vision models:</p>
+              <ul className="text-xs text-slate-600 space-y-1 list-disc list-inside">
+                <li>Identify weed species and cover %</li>
+                <li>Track burndown vs unaffected weeds</li>
+                <li>Auto-create observation entries</li>
+                <li>Calculates DAA from photo timestamps</li>
+              </ul>
+            </div>
+
+            <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 mb-4">
+              <p className="text-xs text-amber-800">
+                <strong>Note:</strong> Requires API keys (Gemini, Groq, etc.) configured in Settings. Analysis runs with 4-second delays between photos to respect rate limits.
+              </p>
+            </div>
+
+            <div className="flex justify-end gap-3">
+              <button onClick={() => setAiBatchModalOpen(false)} className="px-4 py-2 text-sm font-semibold text-slate-600 hover:bg-slate-100 rounded-lg">
+                Cancel
+              </button>
+              <button onClick={handleAnalyzeAllPhotos} className="px-4 py-2 text-sm font-semibold bg-gradient-to-r from-purple-500 to-pink-500 text-white rounded-lg hover:from-purple-600 hover:to-pink-600 shadow-lg flex items-center gap-2">
+                <Sparkles className="w-4 h-4" /> Start AI Analysis
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── AI BATCH PROGRESS WIDGET ── */}
+      {aiBatchRunning && (
+        <div className="fixed top-4 right-4 bg-white shadow-xl rounded-xl p-4 z-50 min-w-[260px] border border-purple-200">
+          <div className="flex items-center gap-2 mb-3">
+            <div className="w-3 h-3 bg-purple-500 rounded-full animate-pulse" />
+            <span className="font-bold text-slate-800 text-sm">AI Analysis</span>
+            <button onClick={() => setAiBatchRunning(false)} className="ml-auto text-slate-400 hover:text-slate-600 text-lg leading-none">&times;</button>
+          </div>
+          <div className="text-xs text-slate-600 mb-2">{aiBatchProgress.message}</div>
+          <div className="w-full bg-slate-200 rounded-full h-2 mb-1">
+            <div
+              className="bg-gradient-to-r from-purple-500 to-pink-500 h-2 rounded-full transition-all duration-300"
+              style={{ width: `${aiBatchProgress.total > 0 ? (aiBatchProgress.current / aiBatchProgress.total) * 100 : 0}%` }}
+            />
+          </div>
+          <div className="text-[10px] text-slate-400 text-right">{aiBatchProgress.current} / {aiBatchProgress.total}</div>
         </div>
       )}
 
