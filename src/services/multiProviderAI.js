@@ -203,42 +203,60 @@ function parseAIJson(text) {
   return JSON.parse(match[1] || match[0]);
 }
 
-async function imageToBase64(dataUrlOrUrl) {
-  let dataUrl;
-  if (typeof dataUrlOrUrl === 'string' && dataUrlOrUrl.startsWith('data:')) {
-    dataUrl = dataUrlOrUrl;
-  } else {
-    const response = await fetch(dataUrlOrUrl);
-    if (!response.ok) throw new Error(`Failed to fetch image: ${response.status}`);
-    const blob = await response.blob();
-    dataUrl = await new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onloadend = () => resolve(reader.result);
-      reader.onerror = reject;
-      reader.readAsDataURL(blob);
-    });
-  }
-  // Re-encode through canvas to ensure valid JPEG (fixes corrupt/wrong-format images)
+function encodeImageViaCanvas(src) {
   return new Promise((resolve, reject) => {
     const img = new Image();
+    const MAX = 1024;
     img.onload = () => {
       const canvas = document.createElement('canvas');
-      const MAX = 1024;
       let w = img.naturalWidth || img.width;
       let h = img.naturalHeight || img.height;
+      if (!w || !h) return reject(new Error('Image has zero dimensions'));
       if (w > MAX || h > MAX) {
         if (w > h) { h = Math.round(h * MAX / w); w = MAX; }
         else { w = Math.round(w * MAX / h); h = MAX; }
       }
       canvas.width = w;
       canvas.height = h;
-      canvas.getContext('2d').drawImage(img, 0, 0, w, h);
-      const jpeg = canvas.toDataURL('image/jpeg', 0.85);
-      resolve(jpeg.split(',')[1]);
+      try {
+        canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+        const jpeg = canvas.toDataURL('image/jpeg', 0.85);
+        if (!jpeg || jpeg === 'data:,') return reject(new Error('Canvas produced empty image'));
+        resolve(jpeg.split(',')[1]);
+      } catch (e) {
+        reject(new Error('Canvas draw failed (possible CORS taint): ' + e.message));
+      }
     };
-    img.onerror = () => reject(new Error('Image failed to load for encoding'));
-    img.src = dataUrl;
+    img.onerror = () => reject(new Error('Image failed to load: ' + src.slice(0, 80)));
+    img.crossOrigin = 'anonymous';
+    img.src = src;
   });
+}
+
+async function imageToBase64(dataUrlOrUrl) {
+  // Already a data URL — encode via canvas to normalise format/size
+  if (typeof dataUrlOrUrl === 'string' && dataUrlOrUrl.startsWith('data:')) {
+    return encodeImageViaCanvas(dataUrlOrUrl);
+  }
+
+  // Remote URL: try fetch first (works for same-origin / CORS-enabled URLs)
+  // For Google Drive thumbnails and other CORS-restricted URLs, fall back to img element
+  try {
+    const response = await fetch(dataUrlOrUrl, { mode: 'cors' });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const blob = await response.blob();
+    const dataUrl = await new Promise((res, rej) => {
+      const reader = new FileReader();
+      reader.onloadend = () => res(reader.result);
+      reader.onerror = rej;
+      reader.readAsDataURL(blob);
+    });
+    return encodeImageViaCanvas(dataUrl);
+  } catch (fetchErr) {
+    // Fetch failed (CORS / Drive auth) — load via <img> element instead
+    console.warn('[AI] fetch failed, trying img load:', fetchErr.message);
+    return encodeImageViaCanvas(dataUrlOrUrl);
+  }
 }
 
 async function callGemini(provider, imageData, context, apiKey) {

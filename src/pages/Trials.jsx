@@ -2103,7 +2103,7 @@ Write a professional, concise narrative summary.`;
                               />
                               <div className="absolute top-1 right-1 flex gap-1">
                                 <button
-                                  onClick={() => handleAnalyzeSinglePhoto(rawSrc, photo.date)}
+                                  onClick={() => handleAnalyzeSinglePhoto(src, photo.date)}
                                   disabled={aiGenRunning}
                                   title={aiGenRunning ? 'AI analysis running...' : 'AI Full Scan & Log'}
                                   className={`p-1.5 rounded-lg text-white shadow transition ${aiGenRunning ? 'bg-purple-400 cursor-wait' : 'bg-purple-600/90 hover:bg-purple-700'}`}>
@@ -2120,11 +2120,11 @@ Write a professional, concise narrative summary.`;
                               {photo.date && <p className="text-[10px] text-slate-400">{new Date(photo.date).toLocaleDateString()}</p>}
                             </div>
                             <div className="px-2 pb-2 flex gap-1 flex-wrap">
-                              <button onClick={() => identifyWeedFromPhoto(rawSrc)} title="AI Weed ID"
+                              <button onClick={() => identifyWeedFromPhoto(src)} title="AI Weed ID"
                                 className="flex items-center gap-1 px-2 py-1 text-[10px] font-semibold bg-emerald-50 text-emerald-700 rounded-lg hover:bg-emerald-100">
                                 <Leaf className="w-3 h-3" />Weed ID
                               </button>
-                              <button onClick={() => detectWeedCoverAI(rawSrc)} title="Detect Weed Cover"
+                              <button onClick={() => detectWeedCoverAI(src)} title="Detect Weed Cover"
                                 className="flex items-center gap-1 px-2 py-1 text-[10px] font-semibold bg-violet-50 text-violet-700 rounded-lg hover:bg-violet-100">
                                 <ScanLine className="w-3 h-3" />Cover
                               </button>
