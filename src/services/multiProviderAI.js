@@ -204,26 +204,46 @@ function parseAIJson(text) {
 }
 
 async function imageToBase64(dataUrlOrUrl) {
+  let dataUrl;
   if (typeof dataUrlOrUrl === 'string' && dataUrlOrUrl.startsWith('data:')) {
-    return dataUrlOrUrl.split(',')[1];
+    dataUrl = dataUrlOrUrl;
+  } else {
+    const response = await fetch(dataUrlOrUrl);
+    if (!response.ok) throw new Error(`Failed to fetch image: ${response.status}`);
+    const blob = await response.blob();
+    dataUrl = await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onloadend = () => resolve(reader.result);
+      reader.onerror = reject;
+      reader.readAsDataURL(blob);
+    });
   }
-  // For remote URLs, fetch and convert
-  const response = await fetch(dataUrlOrUrl);
-  if (!response.ok) throw new Error(`Failed to fetch image: ${response.status}`);
-  const blob = await response.blob();
+  // Re-encode through canvas to ensure valid JPEG (fixes corrupt/wrong-format images)
   return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onloadend = () => resolve(reader.result.split(',')[1]);
-    reader.onerror = reject;
-    reader.readAsDataURL(blob);
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      const MAX = 1024;
+      let w = img.naturalWidth || img.width;
+      let h = img.naturalHeight || img.height;
+      if (w > MAX || h > MAX) {
+        if (w > h) { h = Math.round(h * MAX / w); w = MAX; }
+        else { w = Math.round(w * MAX / h); h = MAX; }
+      }
+      canvas.width = w;
+      canvas.height = h;
+      canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+      const jpeg = canvas.toDataURL('image/jpeg', 0.85);
+      resolve(jpeg.split(',')[1]);
+    };
+    img.onerror = () => reject(new Error('Image failed to load for encoding'));
+    img.src = dataUrl;
   });
 }
 
 async function callGemini(provider, imageData, context, apiKey) {
   const base64 = await imageToBase64(imageData);
-  const mimeType = typeof imageData === 'string' && imageData.startsWith('data:')
-    ? imageData.split(';')[0].split(':')[1]
-    : 'image/jpeg';
+  const mimeType = 'image/jpeg'; // always JPEG after canvas re-encode
 
   const response = await fetch(`${provider.endpoint}?key=${apiKey}`, {
     method: 'POST',
@@ -239,7 +259,9 @@ async function callGemini(provider, imageData, context, apiKey) {
   });
   if (!response.ok) {
     const err = await response.text();
-    throw new Error(`Gemini ${response.status}: ${err.slice(0, 200)}`);
+    const e = new Error(`Gemini ${response.status}: ${err.slice(0, 200)}`);
+    e.status = response.status;
+    throw e;
   }
   const data = await response.json();
   const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
@@ -270,7 +292,9 @@ async function callGroq(provider, imageData, context, apiKey) {
   });
   if (!response.ok) {
     const err = await response.text();
-    throw new Error(`Groq ${response.status}: ${err.slice(0, 200)}`);
+    const e = new Error(`Groq ${response.status}: ${err.slice(0, 200)}`);
+    e.status = response.status;
+    throw e;
   }
   const data = await response.json();
   const text = data.choices?.[0]?.message?.content;
@@ -297,7 +321,11 @@ async function callPixtral(provider, imageData, context, apiKey) {
       }]
     })
   });
-  if (!response.ok) throw new Error(`Pixtral ${response.status}`);
+  if (!response.ok) {
+    const e = new Error(`Pixtral ${response.status}`);
+    e.status = response.status;
+    throw e;
+  }
   const data = await response.json();
   const text = data.choices?.[0]?.message?.content;
   if (!text) throw new Error('Empty Pixtral response');
@@ -318,9 +346,25 @@ async function callProvider(provider, imageData, context, apiKey) {
  * @param {function} onProgress - optional (message: string) => void
  * @returns {{ success: boolean, data?: object, provider?: string, error?: string }}
  */
+// Errors where retrying the same image/key will never help
+function isNonRetryable(err) {
+  const s = err.status;
+  if (s === 400 || s === 401 || s === 403) return true;
+  const msg = err.message || '';
+  if (msg.includes('Unable to process input image')) return true;
+  if (msg.includes('Invalid API Key') || msg.includes('invalid_api_key')) return true;
+  return false;
+}
+
+// 429 = quota exceeded for this key, skip to next key but don't retry
+function isQuotaError(err) {
+  return err.status === 429 || (err.message || '').includes('429');
+}
+
 export async function analyzePhoto(imageData, context = {}, onProgress = null) {
   let usage = loadUsage();
   const delay = ms => new Promise(res => setTimeout(res, ms));
+  let imageErrorCount = 0; // track how many providers say image is bad
 
   for (const provider of PROVIDERS) {
     const keys = getAPIKeys(provider.id);
@@ -329,21 +373,35 @@ export async function analyzePhoto(imageData, context = {}, onProgress = null) {
     for (let ki = 0; ki < keys.length; ki++) {
       if (!hasQuota(provider, ki, usage)) continue;
 
-      for (let attempt = 1; attempt <= 3; attempt++) {
+      for (let attempt = 1; attempt <= 2; attempt++) {
         try {
-          if (onProgress) onProgress(`Analyzing with ${provider.name}${attempt > 1 ? ` (attempt ${attempt})` : ''}...`);
+          if (onProgress) onProgress(`Trying ${provider.name}${attempt > 1 ? ' (retry)' : ''}...`);
           const result = await callProvider(provider, imageData, context, keys[ki]);
           usage = incrementUsage(provider, ki, usage);
           return { success: true, provider: provider.name, data: result };
         } catch (err) {
           console.warn(`[AI] ${provider.name} key ${ki + 1} attempt ${attempt} failed:`, err.message);
-          if (attempt < 3) await delay(3000);
+          if (isNonRetryable(err)) {
+            // 400 bad image — no point trying other keys or attempts for this provider
+            if (err.status === 400 || (err.message || '').includes('Unable to process input image')) {
+              imageErrorCount++;
+              break; // skip to next provider
+            }
+            break; // 401/403 — bad key, skip remaining attempts for this key
+          }
+          if (isQuotaError(err)) break; // 429 — skip this key, try next
+          if (attempt < 2) await delay(2000);
         }
       }
     }
   }
 
-  return { success: false, error: 'All AI providers failed. Check your API keys in Settings.' };
+  // If every provider said bad image, give a clear user-facing message
+  if (imageErrorCount >= 3) {
+    return { success: false, error: 'Image could not be processed by any AI provider. Try re-capturing or cropping the photo and try again.' };
+  }
+
+  return { success: false, error: 'All AI providers exhausted. Check your API keys in Settings.' };
 }
 
 /**
