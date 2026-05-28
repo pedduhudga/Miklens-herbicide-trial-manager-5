@@ -1585,32 +1585,33 @@ HERBICIDE CONTROL DURATION BENCHMARKS (use these exact thresholds):
 - If cover never drops meaningfully (<20% reduction), the product had no measurable control on that species.
 
 LANGUAGE AND TONE RULES — follow strictly:
-1. Regulatory-neutral tone. Do NOT use aggressive or emotive language (avoid: "complete lack of efficacy", "product failed", "unacceptable"). Use neutral, factual phrasing instead (e.g. "inadequate weed control under the evaluated conditions", "no measurable suppression was observed", "no observable response attributable to the treatment").
+1. Regulatory-neutral tone. Do NOT use aggressive or emotive language (avoid: "complete lack of efficacy", "product failed", "unacceptable", "benchmark for effective suppression"). Use neutral, factual phrasing: "inadequate weed control under the evaluated conditions", "no measurable suppression was observed", "no observable response attributable to the treatment", "indicating insufficient weed control performance".
 2. Do NOT speculate beyond observed data. Do not write "active growth and proliferation" unless biomass data supports it. Use cover % data only.
 3. Do NOT write "best or worst performance" comparisons — only state observed cover values objectively.
 4. Do NOT use any markdown formatting (no **, no *, no #, no bullet dashes, no hyphens as bullets). Plain text only.
-5. Section headings as: "1. Application & Setup" on its own line.
-6. Species sub-headings as: "Common Name (Scientific Name)" on its own line, then the paragraph. Do NOT repeat the species name inside the paragraph if it was just stated in the heading.
-7. Application date must be formatted as DD-Mon-YYYY (e.g. 19-Apr-2026). Dosage units: write "mL" not "ml".
-8. Write in third person. Past tense for finalized trials, present tense for ongoing.
-9. Do NOT include a Recommendation or Conclusion section.
+5. Section headings as plain numbered text: "1. Application & Setup" on its own line.
+6. SPECIES HEADING RULE: Each species heading must be written as "Common Name (Scientific Name)" — e.g. "Bermuda Grass (Cynodon dactylon)". NEVER write the same name twice like "Cynodon dactylon (Cynodon dactylon)". If no common name is known, write only the scientific name. Use the common names from the target weed field or weed details if available.
+7. Application date must be formatted as DD-Mon-YYYY (e.g. 19-Apr-2026). Dosage units: write "mL" not "ml". Write coordinates as provided.
+8. Do NOT use the word "phytotoxic" or "phytotoxicity". Use "herbicidal injury symptoms" instead.
+9. Write in third person. Past tense for finalized trials, present tense for ongoing.
+10. Do NOT include a Recommendation or Conclusion section.
 
 OUTPUT STRUCTURE — write exactly these 4 sections, nothing else:
 
 1. Application & Setup
-One sentence: product name, dosage (with proper units), application date (DD-Mon-YYYY), location, and all target weed species with scientific names in parentheses.
+One sentence: product name, dosage (with proper units), application date (DD-Mon-YYYY), location coordinates, and all target weed species with scientific names in parentheses.
 
 2. Overall Efficacy Trajectory
-2-3 sentences. Describe total cover at each recorded DAA. State whether any knockdown symptoms or suppression effects were observed. If cover increased, state it factually (e.g. "Total weed cover increased from X% at DAA 0 to Y% at DAA Z, indicating inadequate weed control under the evaluated conditions."). Do not over-interpret.
+2-3 sentences. State total cover at DAA 0 first. Describe cover at each subsequent DAA. State whether any herbicidal injury symptoms or reduction in weed cover attributable to the product were observed. If cover increased, state factually: "Total weed cover increased from X% at DAA 0 to Y% at DAA Z, indicating inadequate weed control under the evaluated conditions." Do not over-interpret.
 
 3. Species-wise Performance
-For EACH species in the per-species breakdown — write the species heading, then 1-2 sentences:
-- State cover at each observed DAA factually.
-- Use: "no measurable suppression", "no observable reduction", "no significant reduction attributable to the treatment", or "limited to no observable control" as appropriate.
-- Close with ONE neutral summary sentence about overall species-level WCE (e.g. "Overall, all evaluated species demonstrated negligible Weed Control Efficacy (WCE) under the tested field conditions.").
+For EACH species in the per-species breakdown — write the species heading (Common Name + Scientific Name), then 1-2 sentences:
+- State cover value at each observed DAA factually.
+- Use phrases: "no measurable suppression or reduction in cover was observed", "no observable reduction in cover attributable to the treatment was detected", or "limited to no observable control" as appropriate.
+- After all species, close with ONE neutral summary sentence: "Overall, all evaluated species demonstrated negligible Weed Control Efficacy (WCE) under the tested field conditions." (adjust wording only if some species showed partial control).
 
 4. Control Duration Interpretation
-1-2 sentences only. Rate as Poor / Fair / Good / Excellent using the benchmarks. State the observed DAA range and cover values as evidence. Use neutral language (e.g. "Treatment performance was classified as Poor, as no sustained suppression or reduction in weed cover was achieved throughout the X-day observation period.").`;
+1-2 sentences only. Rate as Poor / Fair / Good / Excellent. The observation period length = the DAA of the last recorded observation (e.g. if last DAA is 38, write "38-day observation period", NOT 39). State cover values as evidence. Close with: "indicating insufficient weed control performance under the evaluated field conditions."`;
 
 
       // Use first available Gemini model (try 2.5-flash as reliable stable model)
