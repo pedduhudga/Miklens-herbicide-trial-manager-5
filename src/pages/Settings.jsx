@@ -522,12 +522,6 @@ export default function Settings({ onMenuClick }) {
                 : 'Writes go to Firebase only.'}
             </span>
           </label>
-          {s.sheetMirrorEnabled && !s.scriptUrl && (
-            <div className="flex items-start gap-2 p-3 bg-amber-50 border border-amber-200 rounded-lg text-sm text-amber-800">
-              <AlertTriangle className="w-4 h-4 flex-shrink-0 mt-0.5" />
-              Sheet mirror requires a Script URL below.
-            </div>
-          )}
         </div>
 
         {/* ── Data Source Settings ── */}
@@ -535,7 +529,13 @@ export default function Settings({ onMenuClick }) {
           <h2 className="text-xl font-semibold text-gray-700 mb-1 flex items-center gap-2">
             <Link className="w-5 h-5 text-gray-500" /> Data Source Settings (Google Sheets)
           </h2>
-          <p className="text-sm text-gray-600 mb-4">Google Apps Script URL and Sheet ID are used for the sheet mirror and legacy fallback mode. Photos always go to Google Drive.</p>
+          <p className="text-sm text-gray-600 mb-2">The Apps Script URL is <strong>required for photo uploads to Google Drive</strong> — this applies in both Firebase and Sheet modes. The Sheet ID is only needed when using Sheet mirror/backup.</p>
+          {!s.scriptUrl && (
+            <div className="flex items-start gap-2 p-3 mb-4 bg-red-50 border border-red-200 rounded-lg text-sm text-red-800">
+              <AlertTriangle className="w-4 h-4 flex-shrink-0 mt-0.5" />
+              <span><strong>Script URL missing</strong> — photos cannot be uploaded to Google Drive until this is set.</span>
+            </div>
+          )}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             {[
               { label: 'Script URL', key: 'scriptUrl', placeholder: 'https://script.google.com/macros/s/...' },

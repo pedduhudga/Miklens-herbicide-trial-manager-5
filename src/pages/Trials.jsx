@@ -682,7 +682,21 @@ export default function Trials({ onMenuClick }) {
         folderPath,
       }, getAppState);
 
-      if (uploadResult?._errType) throw new Error(uploadResult.message || 'Drive upload failed');
+      if (uploadResult?._errType) {
+        // Remove the optimistic placeholder from UI since upload failed
+        const rollback = safeJsonParse(activeTrial.PhotoURLs, []).filter(p => p.tempId !== tempId);
+        const rolledBack = { ...activeTrial, PhotoURLs: JSON.stringify(rollback) };
+        updateState({ trials: trials.map(t => t.ID === rolledBack.ID ? rolledBack : t) });
+        setActiveTrial(rolledBack);
+        const isConfig = uploadResult._errType === 'config';
+        window.dispatchEvent(new CustomEvent('app:toast', { detail: {
+          msg: isConfig
+            ? '⚙️ Script URL not set — go to Settings and add your Apps Script URL to enable Drive photo uploads.'
+            : (uploadResult.message || 'Drive upload failed'),
+          type: 'error'
+        }}));
+        return;
+      }
 
       const driveUrl = uploadResult?.url || uploadResult?.fileUrl || null;
 
