@@ -178,22 +178,22 @@ export default function Settings({ onMenuClick }) {
               <label className="block text-gray-700 text-sm font-bold mb-2 flex items-center gap-1">
                 <Cpu className="w-4 h-4 text-indigo-500" /> Gemini API Model
               </label>
-              <select value={s.selectedModel || 'gemini-2.5-flash'}
+              <select value={s.selectedModel || 'gemini-3.5-flash'}
                 onChange={e => updateSettings({ selectedModel: e.target.value })}
                 className="w-full border rounded-md shadow-sm p-2 bg-white text-sm">
-                <optgroup label="Recommended (Stable & Reliable)">
-                  <option value="gemini-2.5-flash">Gemini 2.5 Flash (Best all-round, stable)</option>
-                  <option value="gemini-3.1-flash-lite">Gemini 3.1 Flash-Lite (Ultra-fast, optimized)</option>
+                <optgroup label="Gemini 3.x — Newest (Recommended)">
+                  <option value="gemini-3.1-flash-lite">Gemini 3.1 Flash-Lite ⚡ Fastest, 1500 RPD</option>
+                  <option value="gemini-3.5-flash">Gemini 3.5 Flash 🌟 Best overall, ~500 RPD</option>
+                  <option value="gemini-3-flash-preview">Gemini 3 Flash Preview 🔵 ~100 RPD</option>
+                  <option value="gemini-3.1-pro-preview">Gemini 3.1 Pro Preview 🧠 Deepest reasoning, 25 RPD</option>
                 </optgroup>
-                <optgroup label="Gemini 3 (Newest)">
-                  <option value="gemini-3.5-flash">Gemini 3.5 Flash (Frontier)</option>
-                  <option value="gemini-3.1-pro">Gemini 3.1 Pro (Complex reasoning)</option>
-                </optgroup>
-                <optgroup label="Pro (Heavy reasoning)">
-                  <option value="gemini-2.5-pro">Gemini 2.5 Pro (Deep reasoning, stable)</option>
+                <optgroup label="Gemini 2.5 — Stable Fallback">
+                  <option value="gemini-2.5-flash-lite">Gemini 2.5 Flash-Lite ⚡ 1500 RPD</option>
+                  <option value="gemini-2.5-flash">Gemini 2.5 Flash ✅ 250 RPD</option>
+                  <option value="gemini-2.5-pro">Gemini 2.5 Pro 🔬 25 RPD</option>
                 </optgroup>
               </select>
-              <p className="text-xs text-gray-500 mt-1">Recommended: <b>3.5 Flash</b> (best agentic) or <b>3.1 Flash-Lite</b> (fastest).</p>
+              <p className="text-xs text-gray-500 mt-1">Recommended: <b>Gemini 3.5 Flash</b> (best) or <b>3.1 Flash-Lite</b> (fastest/most quota).</p>
             </div>
             <div>
               <label className="block text-gray-700 text-sm font-bold mb-2 flex items-center gap-1">
