@@ -376,93 +376,9 @@ export default function Dashboard({ onMenuClick }) {
             )}
           </div>
 
-          {/* ── Average Weather Conditions + Alerts ───────────────── */}
-          {weatherStats.hasData && (
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-              <div className="bg-white rounded-xl shadow-sm border border-slate-100 p-5">
-                <h3 className="font-bold text-slate-800 mb-4">Average Weather Conditions <span className="text-xs text-slate-400 font-normal">(across all trials)</span></h3>
-                <div className="grid grid-cols-2 gap-4">
-                  {[
-                    { icon: Thermometer, label: 'Temperature', value: weatherStats.temp, unit: '°C', color: 'text-orange-500', bg: 'bg-orange-50' },
-                    { icon: Droplets, label: 'Humidity', value: weatherStats.hum, unit: '%', color: 'text-blue-500', bg: 'bg-blue-50' },
-                    { icon: Wind, label: 'Wind Speed', value: weatherStats.wind, unit: ' km/h', color: 'text-slate-500', bg: 'bg-slate-50' },
-                    { icon: CloudRain, label: 'Rainfall', value: weatherStats.rain, unit: ' mm', color: 'text-cyan-500', bg: 'bg-cyan-50' },
-                  ].map(({ icon: Icon, label, value, unit, color, bg }) => (
-                    <div key={label} className={`flex items-center gap-3 p-3 rounded-lg ${bg}`}>
-                      <Icon className={`w-5 h-5 shrink-0 ${color}`} />
-                      <div>
-                        <p className="text-xs text-slate-500">{label}</p>
-                        <p className="font-bold text-slate-800 text-sm">
-                          {value !== null ? `${value.toFixed(1)}${unit}` : <span className="text-slate-400 font-normal">N/A</span>}
-                        </p>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
 
-              {weatherAlerts.length > 0 ? (
-                <div className="bg-white rounded-xl shadow-sm border border-slate-100 p-5">
-                  <h3 className="font-bold text-slate-800 mb-3 flex items-center gap-2"><AlertCircle className="w-4 h-4 text-amber-500" /> Weather Alerts</h3>
-                  <div className="space-y-2">
-                    {weatherAlerts.map((a, i) => (
-                      <div key={i} className={`flex items-start gap-2 p-3 rounded-lg text-xs ${a.type === 'warning' ? 'bg-amber-50 text-amber-700 border border-amber-100' : 'bg-blue-50 text-blue-700 border border-blue-100'}`}>
-                        <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
-                        <span>{a.msg}</span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              ) : (
-                <div className="bg-white rounded-xl shadow-sm border border-slate-100 p-5 flex items-center justify-center">
-                  <p className="text-sm text-slate-400">No weather alerts</p>
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* ── Recent Trials + Quick Actions ──────────────────────── */}
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
-            <div className="lg:col-span-2 bg-white rounded-xl shadow-sm border border-slate-100 overflow-hidden">
-              <div className="flex items-center justify-between px-5 py-4 border-b">
-                <h2 className="font-bold text-slate-800">Recent Trials</h2>
-                <button onClick={() => navigate('/trials')} className="text-xs text-emerald-600 font-semibold flex items-center gap-1 hover:underline">
-                  View All <ChevronRight className="w-3.5 h-3.5" />
-                </button>
-              </div>
-              {recentTrials.length > 0 ? (
-                <div className="divide-y divide-slate-50">
-                  {recentTrials.map(t => {
-                    const obsCount = safeJsonParse(t.EfficacyDataJSON, []).length;
-                    const isCompleted = t.IsCompleted === true || t.IsCompleted === 'true';
-                    return (
-                      <div key={t.ID} className="flex items-center gap-3 px-5 py-3 hover:bg-slate-50 transition cursor-pointer" onClick={() => navigate('/trials')}>
-                        <div className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 ${isCompleted ? 'bg-emerald-100 text-emerald-600' : 'bg-blue-100 text-blue-600'}`}>
-                          {isCompleted ? <CheckCircle className="w-4 h-4" /> : <Activity className="w-4 h-4" />}
-                        </div>
-                        <div className="flex-1 min-w-0">
-                          <p className="text-sm font-semibold text-slate-800 truncate">{t.FormulationName || 'Unknown'}</p>
-                          <p className="text-xs text-slate-400">{t.Location || '—'} · {t.WeedSpecies || '—'} · {t.Date ? new Date(t.Date).toLocaleDateString() : '—'}</p>
-                        </div>
-                        <div className="flex items-center gap-2 shrink-0">
-                          {t.Result && <span className={`text-xs font-bold px-2 py-0.5 rounded-full ${RESULT_COLORS[t.Result] || 'bg-slate-100 text-slate-600'}`}>{t.Result}</span>}
-                          {obsCount > 0 && <span className="text-xs text-slate-400">{obsCount} obs</span>}
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              ) : (
-                <div className="py-12 text-center text-slate-400">
-                  <Activity className="w-10 h-10 mx-auto mb-3 opacity-30" />
-                  <p className="text-sm">No trials yet</p>
-                  <button onClick={() => navigate('/trials')} className="mt-3 text-xs text-emerald-600 font-semibold hover:underline">Create your first trial →</button>
-                </div>
-              )}
-            </div>
-
-            <div className="space-y-4">
-              {/* Spray Advisor */}
+          {/* ── Spray Advisor Layout Change Since Cards Removed ──────────────────────── */}
+          <div className="mb-6">
               {trialLocation && (
                 <SprayAdvisor 
                   lat={trialLocation.lat} 
@@ -470,45 +386,6 @@ export default function Dashboard({ onMenuClick }) {
                   locationName={trialLocation.name}
                 />
               )}
-
-              <div className="bg-white rounded-xl shadow-sm border border-slate-100 p-4">
-                <h3 className="font-bold text-slate-800 mb-3 text-sm">Quick Actions</h3>
-                <div className="space-y-2">
-                  {[
-                    { label: 'New Trial',     icon: Plus,       path: '/trials',        color: 'bg-emerald-600 text-white hover:bg-emerald-700' },
-                    { label: 'New Project',   icon: FolderOpen, path: '/projects',      color: 'bg-blue-600 text-white hover:bg-blue-700' },
-                    { label: 'Analytics',     icon: BarChart3,  path: '/analytics',     color: 'bg-slate-100 text-slate-700 hover:bg-slate-200' },
-                    { label: 'AI Assistant',  icon: TrendingUp, path: '/ai-assistant',  color: 'bg-slate-100 text-slate-700 hover:bg-slate-200' },
-                    { label: 'Smart Search',  icon: Search,     path: '/search',        color: 'bg-slate-100 text-slate-700 hover:bg-slate-200' },
-                  ].map(({ label, icon: Icon, path, color }) => (
-                    <button key={label} onClick={() => navigate(path)} className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-semibold transition ${color}`}>
-                      <Icon className="w-4 h-4" />{label}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              {recentProjects.length > 0 && (
-                <div className="bg-white rounded-xl shadow-sm border border-slate-100 p-4">
-                  <div className="flex justify-between items-center mb-3">
-                    <h3 className="font-bold text-slate-800 text-sm">Recent Projects</h3>
-                    <button onClick={() => navigate('/projects')} className="text-xs text-emerald-600 hover:underline">View All</button>
-                  </div>
-                  <div className="space-y-2">
-                    {recentProjects.map(p => {
-                      const pt = trials.filter(t => t.ProjectID === p.ID).length;
-                      return (
-                        <div key={p.ID} className="flex items-center gap-2 p-2 rounded-lg bg-slate-50 hover:bg-slate-100 transition cursor-pointer text-sm" onClick={() => navigate('/projects')}>
-                          <FolderOpen className="w-4 h-4 text-purple-500 shrink-0" />
-                          <span className="font-semibold text-slate-700 truncate flex-1">{p.Name}</span>
-                          <span className="text-xs text-slate-400 shrink-0">{pt} trial{pt !== 1 ? 's' : ''}</span>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              )}
-            </div>
           </div>
 
           {/* ── Top Performing Formulations by Weed ───────────────── */}

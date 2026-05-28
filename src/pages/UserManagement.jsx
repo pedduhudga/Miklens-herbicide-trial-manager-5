@@ -211,6 +211,21 @@ export default function UserManagement({ onMenuClick }) {
                 <button type="submit" className="btn-primary px-5 py-2 rounded-lg text-sm font-semibold">{editingUser ? 'Update' : 'Create User'}</button>
               </div>
             </form>
+            {editingUser && (
+                <div className="mt-4 pt-3 border-t">
+                    <button type="button" onClick={async () => {
+                        const email = prompt("Enter the user's email to send a password reset link:");
+                        if (email) {
+                            try {
+                                const { fbResetPassword } = await import('../services/firebaseAuth.js');
+                                const res = await fbResetPassword(email);
+                                if (res.success) toast('Password reset email sent!', 'success');
+                                else toast(res.message, 'error');
+                            } catch (e) { toast('Error sending reset email', 'error'); }
+                        }
+                    }} className="w-full px-4 py-2 text-sm font-semibold text-blue-600 bg-blue-50 hover:bg-blue-100 rounded-lg transition">Send Password Reset Email (Firebase)</button>
+                </div>
+            )}
           </div>
         </div>
       )}

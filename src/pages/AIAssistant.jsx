@@ -47,6 +47,20 @@ export default function AIAssistant({ onMenuClick }) {
 
   const history = state.aiChatHistory || [];
 
+  // Robust chat history persistence
+  useEffect(() => {
+    try {
+      if (history.length === 0) {
+        const localHistory = localStorage.getItem('aiChatHistory');
+        if (localHistory) {
+          updateState({ aiChatHistory: JSON.parse(localHistory) });
+        }
+      } else {
+        localStorage.setItem('aiChatHistory', JSON.stringify(history));
+      }
+    } catch(e) { }
+  }, [history, updateState]);
+
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [history, isLoading]);
@@ -135,7 +149,7 @@ ${JSON.stringify(trialsCtx, null, 2)}
 Projects: ${(state.projects || []).map(p => p.Name).join(', ') || 'None'}
 Formulations: ${(state.formulations || []).map(f => f.Name).join(', ') || 'None'}
 
-Answer the user's question clearly and concisely. Use bullet points where helpful. Reference specific trial data when relevant.`;
+You must optimize for fast answers and strictly incorporate product formulation rules. You must explicitly recognize input weed types and recommend the precise herbicide formula composition or calculate a modified composition optimization when tasked with developing a new version of the product. Answer the user's question clearly and concisely. Use bullet points where helpful. Reference specific trial data when relevant.`;
 
       const fullPrompt = `${systemCtx}\n\nUser: ${userMsg}`;
       let reply;

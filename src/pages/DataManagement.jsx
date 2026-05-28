@@ -1,13 +1,16 @@
 import React, { useRef, useState } from 'react';
 import TopBar from '../components/TopBar.jsx';
 import { useAppState } from '../hooks/useAppState.jsx';
-import { Database, Download, Upload, Archive, Activity, FileSpreadsheet, CheckCircle, AlertCircle, Wrench, Bot, Trash2, FileCode, Cloud } from 'lucide-react';
+import { Database, Download, Upload, Archive, Activity, FileSpreadsheet, CheckCircle, AlertCircle, Wrench, Bot, Trash2, FileCode, Cloud, Import } from 'lucide-react';
 import CloudBackup from '../components/CloudBackup.jsx';
-import { exportCSV, exportZIP } from '../utils/exportUtils.js';
+import { exportCSV, exportZIP, importCSV } from '../utils/exportUtils.js';
+import { updateTrial, updateProject, updateFormulation } from '../services/dataLayer.js'; // Adjust as needed
 
 export default function DataManagement({ onMenuClick }) {
-  const { state, updateState } = useAppState();
+  const { state, updateState, getAppState } = useAppState();
   const importRef = useRef(null);
+  const csvImportRef = useRef(null);
+  const [csvImportEntity, setCsvImportEntity] = useState('');
   const [repairProgress, setRepairProgress] = useState('');
   const [showCloudBackup, setShowCloudBackup] = useState(false);
   const [scanSummary, setScanSummary] = useState('');
@@ -632,6 +635,51 @@ Provide a 2-sentence summary of expected efficacy based on typical performance p
             className="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-semibold hover:bg-blue-700 transition flex items-center gap-2">
             <Upload className="w-4 h-4" /> Select JSON File to Import
           </button>
+
+          <div className="mt-5 border-t pt-4">
+            <p className="text-sm font-semibold text-slate-600 mb-2 flex items-center gap-2">
+              <Import className="w-4 h-4" /> Import CSV per Entity (Bulk Upsert)
+            </p>
+            <p className="text-gray-600 mb-4 text-xs">This matches the export CSV schema and will update existing records (matching by ID) or insert new ones.</p>
+            <input ref={csvImportRef} type="file" accept=".csv" className="hidden" onChange={(e) => {
+              const file = e.target.files?.[0];
+              if (!file || !csvImportEntity) return;
+              importCSV(file, (data) => {
+                if (data.length === 0) {
+                  toast('No valid data found in CSV', 'error');
+                  return;
+                }
+                const key = csvImportEntity.toLowerCase(); // trials, projects, formulations, ingredients, organisations
+                const currentData = [...(state[key] || [])];
+                let inserted = 0;
+                let updated = 0;
+
+                data.forEach(row => {
+                  if (!row.ID) row.ID = Date.now().toString() + Math.random().toString(36).substr(2, 5);
+                  const existingIndex = currentData.findIndex(item => item.ID === row.ID);
+                  if (existingIndex >= 0) {
+                    currentData[existingIndex] = { ...currentData[existingIndex], ...row };
+                    updated++;
+                  } else {
+                    currentData.push(row);
+                    inserted++;
+                  }
+                });
+
+                updateState({ [key]: currentData });
+                toast(`Imported ${data.length} records (${inserted} new, ${updated} updated) for ${csvImportEntity}`, 'success');
+              });
+              e.target.value = '';
+            }} />
+            <div className="flex flex-wrap gap-2">
+              {dataSummary.map(({ key, label }) => (
+                <button key={key} onClick={() => { setCsvImportEntity(key); csvImportRef.current?.click(); }}
+                  className="text-xs font-semibold px-3 py-1.5 bg-blue-50 text-blue-700 rounded-lg hover:bg-blue-100 border border-blue-200 transition">
+                  Import {label}
+                </button>
+              ))}
+            </div>
+          </div>
         </div>
 
         {/* ── Sync Queue ── */}

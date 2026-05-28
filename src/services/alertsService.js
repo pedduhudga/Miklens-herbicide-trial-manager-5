@@ -14,7 +14,8 @@ export const ALERT_TYPES = {
   OBSERVATION_DUE: 'observation_due',
   WEATHER_RISK: 'weather_risk',
   TRIAL_INCOMPLETE: 'trial_incomplete',
-  CONTROL_CHECK: 'control_check'
+  CONTROL_CHECK: 'control_check',
+  INDUSTRY_NONCOMPLIANCE: 'industry_noncompliance',
 };
 
 export const ALERT_SEVERITY = {
@@ -225,6 +226,31 @@ export function checkObservationDue(trial) {
 }
 
 /**
+ * Validate against industry safety standards
+ */
+export function checkIndustryStandards(trial) {
+  const alerts = [];
+  const temp = parseFloat(trial.Temperature);
+  const wind = parseFloat(trial.Windspeed);
+
+  if (!isNaN(wind) && wind > 15) {
+    alerts.push({
+      reason: 'Wind speed exceeds 15 km/h, indicating severe drift risk non-compliance.',
+      severity: ALERT_SEVERITY.CRITICAL,
+      details: { windSpeed: wind }
+    });
+  }
+  if (!isNaN(temp) && temp > 30) {
+    alerts.push({
+      reason: 'Temperature exceeds 30°C, indicating high volatility non-compliance.',
+      severity: ALERT_SEVERITY.HIGH,
+      details: { temperature: temp }
+    });
+  }
+  return alerts;
+}
+
+/**
  * Generate all alerts for a trial
  */
 export function generateTrialAlerts(trial, projectTrials = []) {
@@ -305,6 +331,23 @@ export function generateTrialAlerts(trial, projectTrials = []) {
     });
   }
   
+  // 5. Check against industry standards
+  const standardAlerts = checkIndustryStandards(trial);
+  standardAlerts.forEach((stdAlert, index) => {
+    alerts.push({
+      id: `${trial.ID}-industry-standard-${index}`,
+      type: ALERT_TYPES.INDUSTRY_NONCOMPLIANCE,
+      severity: stdAlert.severity,
+      title: 'Industry Safety Standard Flag',
+      message: stdAlert.reason,
+      trialId: trial.ID,
+      trialName: trial.FormulationName,
+      details: stdAlert.details,
+      timestamp: new Date().toISOString(),
+      actionable: false
+    });
+  });
+
   return alerts;
 }
 

@@ -423,6 +423,64 @@ export function exportCSV(data, filename) {
     saveAs(blob, filename + '.csv');
 }
 
+export function importCSV(file, callback) {
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (e) => {
+        const text = e.target.result;
+        if (!text) { callback([]); return; }
+        // Simple CSV parser supporting quotes
+        const rows = [];
+        let currentRow = [];
+        let currentCell = '';
+        let inQuotes = false;
+
+        for (let i = 0; i < text.length; i++) {
+            const char = text[i];
+            const nextChar = text[i + 1];
+
+            if (char === '"' && inQuotes && nextChar === '"') {
+                currentCell += '"';
+                i++;
+            } else if (char === '"') {
+                inQuotes = !inQuotes;
+            } else if (char === ',' && !inQuotes) {
+                currentRow.push(currentCell);
+                currentCell = '';
+            } else if (char === '\n' && !inQuotes) {
+                if (currentCell.endsWith('\r')) currentCell = currentCell.slice(0, -1);
+                currentRow.push(currentCell);
+                rows.push(currentRow);
+                currentRow = [];
+                currentCell = '';
+            } else if (char === '\r' && !inQuotes && nextChar === '\n') {
+                // skip \r if it's followed by \n and we are not in quotes
+            } else {
+                currentCell += char;
+            }
+        }
+        if (currentCell || currentRow.length > 0) {
+            if (currentCell.endsWith('\r')) currentCell = currentCell.slice(0, -1);
+            currentRow.push(currentCell);
+            rows.push(currentRow);
+        }
+
+        if (rows.length < 2) { callback([]); return; }
+
+        const headers = rows[0];
+        const data = rows.slice(1).map(row => {
+            const obj = {};
+            headers.forEach((header, index) => {
+                obj[header] = row[index] || '';
+            });
+            return obj;
+        }).filter(obj => Object.values(obj).some(val => val !== ''));
+
+        callback(data);
+    };
+    reader.readAsText(file);
+}
+
 export async function exportZIP(trials) {
     if(!trials || trials.length === 0) return;
 

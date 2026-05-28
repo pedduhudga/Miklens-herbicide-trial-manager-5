@@ -129,6 +129,10 @@ export default function SmartSearch({ onMenuClick }) {
   }, [query, index]);
 
   const handleNavigate = (item) => {
+    if (item.type === 'trial') {
+      navigate(`/trials?focus=${item.id}`);
+      return;
+    }
     const routes = { trial: '/trials', project: '/projects', formulation: '/formulations', ingredient: '/ingredients', organisation: '/organisations' };
     navigate(routes[item.type] || '/');
   };

@@ -56,8 +56,11 @@ const emptyForm = () => ({
   YieldValue: '', IsLive: true,
 });
 
+import { useLocation } from 'react-router-dom';
+
 export default function Trials({ onMenuClick }) {
   const { state, updateState, getAppState } = useAppState();
+  const location = useLocation();
 
   // --- List view state ---
   const [activeTab, setActiveTab] = useState('all');
@@ -157,6 +160,19 @@ export default function Trials({ onMenuClick }) {
   const [isBulkQrModalOpen, setIsBulkQrModalOpen] = useState(false);
   const [qrCardSize, setQrCardSize] = useState(state.settings?.cardPrintSize || 'id-card');
   const bulkQrRef = useRef(null);
+
+  // ── ROUTING EFFECT ─────────────────────────────────────────────────
+  useEffect(() => {
+    const searchParams = new URLSearchParams(location.search);
+    const focusId = searchParams.get('focus');
+    if (focusId) {
+      const trialToFocus = state.trials?.find(t => t.ID === focusId);
+      if (trialToFocus) {
+        setActiveTrial(trialToFocus);
+        setDetailTab('info');
+      }
+    }
+  }, [location.search, state.trials]);
 
   // ── DERIVED DATA ───────────────────────────────────────────────────
   const trials = state.trials || [];
