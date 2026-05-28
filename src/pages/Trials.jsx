@@ -1617,15 +1617,29 @@ Be direct and honest — do not soften poor results. Write in third person. Use 
       const text = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
       if (!text) throw new Error('Empty AI response');
       setAiSummary(text);
+      // ── Persist to Firebase so it survives refresh ──
+      const obsCount = efficacy.length;
+      const existing = safeJsonParse(detailTrial.AISummariesJSON, {});
+      const updatedSummaries = { ...existing, narrative: text, narrativeObsCount: obsCount, narrativeGeneratedAt: new Date().toISOString() };
+      const updatedTrial = { ...detailTrial, AISummariesJSON: JSON.stringify(updatedSummaries) };
+      updateState({ trials: trials.map(t => t.ID === updatedTrial.ID ? updatedTrial : t) });
+      setActiveTrial(updatedTrial);
+      try { await updateTrial({ ID: updatedTrial.ID, AISummariesJSON: updatedTrial.AISummariesJSON }, getAppState); } catch(e) {}
+      window.dispatchEvent(new CustomEvent('app:toast', { detail: { msg: 'AI narrative saved!', type: 'success' } }));
     } catch (err) {
       window.dispatchEvent(new CustomEvent('app:toast', { detail: { msg: `AI error: ${err.message}`, type: 'error' } }));
     } finally {
       setAiLoading(false);
     }
-  }, [detailTrial, state.settings]);
+  }, [detailTrial, state.settings, trials, updateState, getAppState]);
 
-  // Reset AI summary when active trial changes
-  useEffect(() => { setAiSummary(''); setQrGenerated(false); setExportMenuOpen(false); }, [activeTrial?.ID]);
+  // Load saved AI narrative when switching to AI tab or changing trial
+  useEffect(() => {
+    const saved = safeJsonParse(detailTrial?.AISummariesJSON, {});
+    setAiSummary(saved.narrative || '');
+    setQrGenerated(false);
+    setExportMenuOpen(false);
+  }, [detailTrial?.ID]);
 
   // Close export menu on outside click
   useEffect(() => {
@@ -1650,16 +1664,41 @@ Be direct and honest — do not soften poor results. Write in third person. Use 
   const exportHtmlSlide     = useCallback((trial) => { const proj = projects.find(p => p.ID === trial.ProjectID); exportHtmlReport(trial, proj?.Name || ''); }, [projects]);
   const exportAllCsv        = useCallback(() => exportAllTrialsCSV(trials, projects), [trials, projects]);
   const shareTrial          = useCallback((trial) => shareTrialFn(trial), []);
+  // Helper: check if AI narrative is stale before export
+  const checkAiNarrativeBeforeExport = useCallback((trial, proceed) => {
+    const saved = safeJsonParse(trial.AISummariesJSON, {});
+    const currentObsCount = validateEfficacyData(safeJsonParse(trial.EfficacyDataJSON, [])).length;
+    const savedObsCount = saved.narrativeObsCount ?? null;
+    const hasNarrative = !!saved.narrative;
+    if (!hasNarrative) {
+      // No narrative at all — offer to continue without or cancel
+      if (window.confirm('No AI narrative has been generated for this trial yet.\n\nClick OK to download the report without AI narrative, or Cancel to go generate one first (AI tab).')) {
+        proceed();
+      }
+      return;
+    }
+    if (savedObsCount !== null && currentObsCount > savedObsCount) {
+      // Stale narrative — new observations added since last generation
+      const genDate = saved.narrativeGeneratedAt ? new Date(saved.narrativeGeneratedAt).toLocaleString() : 'unknown';
+      if (window.confirm(`New observations have been added since the AI narrative was last generated (${genDate}, based on ${savedObsCount} observation${savedObsCount !== 1 ? 's' : ''}).\n\nCurrently there ${currentObsCount === 1 ? 'is' : 'are'} ${currentObsCount} observation${currentObsCount !== 1 ? 's' : ''}.\n\nClick OK to download with the existing narrative, or Cancel to regenerate first (AI tab).`)) {
+        proceed();
+      }
+      return;
+    }
+    // Narrative is fresh — proceed directly
+    proceed();
+  }, []);
+
   // PDF variants — matching legacy buttons exactly
-  const handleExportPdf          = useCallback((trial, opts = {}) => generateComprehensivePdf(trial, { withIngredients: true,  withWeeds: false, withTimeline: false, ...opts, formulations: state.formulations || [] }), [state.formulations]);
-  const handleExportPdfNoIng     = useCallback((trial, opts = {}) => generateComprehensivePdf(trial, { withIngredients: false, withWeeds: false, withTimeline: false, ...opts, formulations: state.formulations || [] }), [state.formulations]);
-  const handleExportPdfWeedsIng  = useCallback((trial, opts = {}) => generateComprehensivePdf(trial, { withIngredients: true,  withWeeds: true,  withTimeline: false, ...opts, formulations: state.formulations || [] }), [state.formulations]);
-  const handleExportPdfWeeds     = useCallback((trial, opts = {}) => generateComprehensivePdf(trial, { withIngredients: false, withWeeds: true,  withTimeline: false, ...opts, formulations: state.formulations || [] }), [state.formulations]);
-  const handleExportFullNoIng    = useCallback((trial, opts = {}) => generateComprehensivePdf(trial, { withIngredients: false, withWeeds: true,  withTimeline: true,  ...opts, formulations: state.formulations || [] }), [state.formulations]);
-  const handleExportFullIng      = useCallback((trial, opts = {}) => generateComprehensivePdf(trial, { withIngredients: true,  withWeeds: true,  withTimeline: true,  ...opts, formulations: state.formulations || [] }), [state.formulations]);
-  // Scientific PDF variants
-  const handleExportSciPdf       = useCallback((trial, opts = {}) => { const aiSummary = safeJsonParse(trial.AISummariesJSON, {}).cover || ''; generateScientificReport(trial, { withIngredients: false, aiSummary, ...opts, formulations: state.formulations || [] }); }, [state.formulations]);
-  const handleExportSciPdfIng    = useCallback((trial, opts = {}) => { const aiSummary = safeJsonParse(trial.AISummariesJSON, {}).cover || ''; generateScientificReport(trial, { withIngredients: true,  aiSummary, ...opts, formulations: state.formulations || [] }); }, [state.formulations]);
+  const handleExportPdf          = useCallback((trial, opts = {}) => checkAiNarrativeBeforeExport(trial, () => generateComprehensivePdf(trial, { withIngredients: true,  withWeeds: false, withTimeline: false, ...opts, formulations: state.formulations || [] })), [state.formulations, checkAiNarrativeBeforeExport]);
+  const handleExportPdfNoIng     = useCallback((trial, opts = {}) => checkAiNarrativeBeforeExport(trial, () => generateComprehensivePdf(trial, { withIngredients: false, withWeeds: false, withTimeline: false, ...opts, formulations: state.formulations || [] })), [state.formulations, checkAiNarrativeBeforeExport]);
+  const handleExportPdfWeedsIng  = useCallback((trial, opts = {}) => checkAiNarrativeBeforeExport(trial, () => generateComprehensivePdf(trial, { withIngredients: true,  withWeeds: true,  withTimeline: false, ...opts, formulations: state.formulations || [] })), [state.formulations, checkAiNarrativeBeforeExport]);
+  const handleExportPdfWeeds     = useCallback((trial, opts = {}) => checkAiNarrativeBeforeExport(trial, () => generateComprehensivePdf(trial, { withIngredients: false, withWeeds: true,  withTimeline: false, ...opts, formulations: state.formulations || [] })), [state.formulations, checkAiNarrativeBeforeExport]);
+  const handleExportFullNoIng    = useCallback((trial, opts = {}) => checkAiNarrativeBeforeExport(trial, () => generateComprehensivePdf(trial, { withIngredients: false, withWeeds: true,  withTimeline: true,  ...opts, formulations: state.formulations || [] })), [state.formulations, checkAiNarrativeBeforeExport]);
+  const handleExportFullIng      = useCallback((trial, opts = {}) => checkAiNarrativeBeforeExport(trial, () => generateComprehensivePdf(trial, { withIngredients: true,  withWeeds: true,  withTimeline: true,  ...opts, formulations: state.formulations || [] })), [state.formulations, checkAiNarrativeBeforeExport]);
+  // Scientific PDF variants — pass narrative into report
+  const handleExportSciPdf       = useCallback((trial, opts = {}) => checkAiNarrativeBeforeExport(trial, () => { const saved = safeJsonParse(trial.AISummariesJSON, {}); const aiSummary = saved.narrative || saved.cover || ''; generateScientificReport(trial, { withIngredients: false, aiSummary, ...opts, formulations: state.formulations || [] }); }), [state.formulations, checkAiNarrativeBeforeExport]);
+  const handleExportSciPdfIng    = useCallback((trial, opts = {}) => checkAiNarrativeBeforeExport(trial, () => { const saved = safeJsonParse(trial.AISummariesJSON, {}); const aiSummary = saved.narrative || saved.cover || ''; generateScientificReport(trial, { withIngredients: true,  aiSummary, ...opts, formulations: state.formulations || [] }); }), [state.formulations, checkAiNarrativeBeforeExport]);
   // DOC variants
   const handleExportDocNoIng     = useCallback((trial) => exportTrialDocx(trial, { withIngredients: false, withWeeds: true,  formulations: state.formulations || [] }), [state.formulations]);
   const handleExportDocIng       = useCallback((trial) => exportTrialDocx(trial, { withIngredients: true,  withWeeds: true,  formulations: state.formulations || [] }), [state.formulations]);
@@ -2794,32 +2833,48 @@ Be direct and honest — do not soften poor results. Write in third person. Use 
               )}
 
               {/* AI Summary Tab */}
-              {detailTab === 'ai' && (
-                <div className="space-y-4">
-                  <div className="flex items-center justify-between">
-                    <h3 className="font-semibold text-slate-700 flex items-center gap-2"><BrainCircuit className="w-4 h-4 text-violet-500" /> AI Trial Narrative</h3>
-                    <button onClick={generateAiSummary} disabled={aiLoading}
-                      className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold bg-violet-600 text-white rounded-lg hover:bg-violet-700 disabled:opacity-50">
-                      {aiLoading ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />}
-                      {aiLoading ? 'Generating...' : 'Generate Summary'}
-                    </button>
+              {detailTab === 'ai' && (() => {
+                const savedAi = safeJsonParse(detailTrial?.AISummariesJSON, {});
+                const currentObsCount = validateEfficacyData(safeJsonParse(detailTrial?.EfficacyDataJSON, [])).length;
+                const isStale = savedAi.narrative && savedAi.narrativeObsCount != null && currentObsCount > savedAi.narrativeObsCount;
+                return (
+                  <div className="space-y-4">
+                    <div className="flex items-center justify-between">
+                      <h3 className="font-semibold text-slate-700 flex items-center gap-2"><BrainCircuit className="w-4 h-4 text-violet-500" /> AI Trial Narrative</h3>
+                      <button onClick={generateAiSummary} disabled={aiLoading}
+                        className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold bg-violet-600 text-white rounded-lg hover:bg-violet-700 disabled:opacity-50">
+                        {aiLoading ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />}
+                        {aiLoading ? 'Generating...' : (savedAi.narrative ? 'Regenerate' : 'Generate Summary')}
+                      </button>
+                    </div>
+                    {isStale && (
+                      <div className="flex items-start gap-2 bg-amber-50 border border-amber-300 rounded-xl px-3 py-2 text-xs text-amber-800">
+                        <span className="mt-0.5">⚠</span>
+                        <span><strong>{currentObsCount - (savedAi.narrativeObsCount ?? 0)} new observation{currentObsCount - (savedAi.narrativeObsCount ?? 0) !== 1 ? 's' : ''} added</strong> since this narrative was generated. Click <strong>Regenerate</strong> to update before exporting.</span>
+                      </div>
+                    )}
+                    {aiSummary ? (
+                      <div className="bg-violet-50 border border-violet-200 rounded-xl p-4 text-sm text-slate-700 leading-relaxed whitespace-pre-wrap">
+                        {aiSummary}
+                        {savedAi.narrativeGeneratedAt && (
+                          <p className="mt-3 pt-2 border-t border-violet-200 text-[11px] text-violet-400">
+                            Generated {new Date(savedAi.narrativeGeneratedAt).toLocaleString()} · based on {savedAi.narrativeObsCount} observation{savedAi.narrativeObsCount !== 1 ? 's' : ''}
+                          </p>
+                        )}
+                      </div>
+                    ) : (
+                      <div className="text-center py-10 text-slate-400 border-2 border-dashed rounded-xl">
+                        <BrainCircuit className="w-10 h-10 mx-auto mb-3 opacity-30" />
+                        <p>No AI summary yet</p>
+                        <p className="text-xs mt-1">Click Generate Summary to create an AI narrative for this trial</p>
+                        {!state.settings?.apiKeys?.[0] && (
+                          <p className="text-xs mt-2 text-amber-500 font-medium">⚠ Add a Gemini API key in Settings first</p>
+                        )}
+                      </div>
+                    )}
                   </div>
-                  {aiSummary ? (
-                    <div className="bg-violet-50 border border-violet-200 rounded-xl p-4 text-sm text-slate-700 leading-relaxed whitespace-pre-wrap">
-                      {aiSummary}
-                    </div>
-                  ) : (
-                    <div className="text-center py-10 text-slate-400 border-2 border-dashed rounded-xl">
-                      <BrainCircuit className="w-10 h-10 mx-auto mb-3 opacity-30" />
-                      <p>No AI summary yet</p>
-                      <p className="text-xs mt-1">Click Generate Summary to create an AI narrative for this trial</p>
-                      {!state.settings?.apiKeys?.[0] && (
-                        <p className="text-xs mt-2 text-amber-500 font-medium">⚠ Add a Gemini API key in Settings first</p>
-                      )}
-                    </div>
-                  )}
-                </div>
-              )}
+                );
+              })()}
 
               {/* Export Tab */}
               {detailTab === 'export' && (
