@@ -3,6 +3,7 @@ import { useAppState } from '../hooks/useAppState.jsx';
 import TopBar from '../components/TopBar.jsx';
 import Modal from '../components/Modal.jsx';
 import { addTrial, deleteTrial, updateTrial } from '../services/dataLayer.js';
+import { apiCall } from '../services/db.js';
 import {
   Plus, Trash2, Edit, Copy, ChevronRight, Activity, MapPin, Calendar,
   CheckCircle, Camera, Grid, Info, Sparkles, Search, Filter, X,
@@ -645,17 +646,61 @@ export default function Trials({ onMenuClick }) {
 
   const saveAndAnalyzePhoto = async (dataUrl, photoDateStr) => {
     if (!activeTrial) return;
-    window.dispatchEvent(new CustomEvent('app:toast', { detail: { msg: 'Photo saved! Starting AI analysis...', type: 'info' } }));
 
     const photoDate = photoDateStr || new Date().toISOString().split('T')[0];
-    const photos = safeJsonParse(activeTrial.PhotoURLs, []);
-    photos.push({ fileData: dataUrl, date: photoDate, label: cameraMode === 'weed' ? 'Weed Photo' : 'Field Observation', identifications: [] });
-    const updated = { ...activeTrial, PhotoURLs: JSON.stringify(photos) };
-    updateState({ trials: trials.map(t => t.ID === updated.ID ? updated : t) });
-    setActiveTrial(updated);
+    const fileName = `photo_${activeTrial.ID}_${Date.now()}.jpg`;
+    const tempId = `local_${Date.now()}`;
+
+    // Build Drive folder path — same convention as HTML app:
+    // Standard trial (no ProjectID): ['Ungrouped Projects', 'FormulationName (date)']
+    // RCBD trial (has ProjectID):    ['ProjectName', 'FormulationName (date)']
+    const project = activeTrial.ProjectID
+      ? (state.projects || []).find(p => p.ID === activeTrial.ProjectID)
+      : null;
+    const projectName = project ? project.Name : 'Ungrouped Projects';
+    const trialNameWithDate = `${activeTrial.FormulationName || 'Unknown Formulation'} (${activeTrial.Date ? activeTrial.Date.split('T')[0] : photoDate})`.trim();
+    const folderPath = [projectName, trialNameWithDate];
+
+    // Optimistically add a placeholder with tempId so the photo appears immediately
+    const photoEntry = { tempId, fileData: dataUrl, date: photoDate, label: cameraMode === 'weed' ? 'Weed Photo' : 'Field Observation', identifications: [] };
+    const photosOptimistic = [...safeJsonParse(activeTrial.PhotoURLs, []), photoEntry];
+    const optimisticTrial = { ...activeTrial, PhotoURLs: JSON.stringify(photosOptimistic) };
+    updateState({ trials: trials.map(t => t.ID === optimisticTrial.ID ? optimisticTrial : t) });
+    setActiveTrial(optimisticTrial);
+
+    window.dispatchEvent(new CustomEvent('app:toast', { detail: { msg: `Uploading to Drive (${projectName} / ${trialNameWithDate})...`, type: 'info' } }));
 
     try {
-      await updateTrial({ ID: updated.ID, PhotoURLs: updated.PhotoURLs }, getAppState);
+      // 1. Upload photo to Google Drive — this is the critical step the React app was missing
+      const uploadResult = await apiCall('uploadPhoto', {
+        trialId: activeTrial.ID,
+        fileData: dataUrl,
+        mimeType: 'image/jpeg',
+        fileName,
+        isWeed: cameraMode === 'weed',
+        label: photoEntry.label,
+        date: photoDate,
+        folderPath,
+      }, false, getAppState);
+
+      if (uploadResult?._errType) throw new Error(uploadResult.message || 'Drive upload failed');
+
+      const driveUrl = uploadResult?.url || uploadResult?.fileUrl || null;
+
+      // 2. Replace placeholder with final Drive URL entry
+      const currentPhotos = safeJsonParse(activeTrial.PhotoURLs, []).filter(p => p.tempId !== tempId);
+      const finalEntry = driveUrl
+        ? { url: driveUrl, date: photoDate, label: photoEntry.label, identifications: [] }
+        : { ...photoEntry, tempId: undefined };
+      currentPhotos.push(finalEntry);
+
+      const updatedTrial = { ...activeTrial, PhotoURLs: JSON.stringify(currentPhotos) };
+      updateState({ trials: trials.map(t => t.ID === updatedTrial.ID ? updatedTrial : t) });
+      setActiveTrial(updatedTrial);
+
+      await updateTrial({ ID: updatedTrial.ID, PhotoURLs: updatedTrial.PhotoURLs }, getAppState);
+
+      window.dispatchEvent(new CustomEvent('app:toast', { detail: { msg: driveUrl ? 'Photo saved to Drive! Starting AI analysis...' : 'Photo saved locally. Starting AI analysis...', type: 'info' } }));
 
       const trialDate = new Date(activeTrial.Date);
       const pDate = new Date(photoDate);
