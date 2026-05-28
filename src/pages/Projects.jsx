@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { useAppState } from '../hooks/useAppState.jsx';
 import TopBar from '../components/TopBar.jsx';
 import Modal from '../components/Modal.jsx';
-import { addProject, deleteProject, addBlock, updateProject } from '../services/db.js';
+import { addProject, deleteProject, addBlock, updateProject } from '../services/dataLayer.js';
 import {
   Plus, Trash2, Layers, Beaker, Activity, ChevronRight, ArrowLeft,
   Lock, Unlock, Download, FileText, RefreshCw, BarChart2, Shuffle,

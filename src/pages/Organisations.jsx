@@ -3,7 +3,7 @@ import { useAppState } from '../hooks/useAppState.jsx';
 import TopBar from '../components/TopBar.jsx';
 import Modal from '../components/Modal.jsx';
 import { safeJsonParse } from '../utils/helpers.js';
-import { addOrganisation, deleteOrganisation } from '../services/db.js';
+import { addOrganisation, deleteOrganisation } from '../services/dataLayer.js';
 import { Trash2, Plus, Edit, Search, Building2, Activity, X, ChevronDown, ChevronUp } from 'lucide-react';
 
 export default function Organisations({ onMenuClick }) {

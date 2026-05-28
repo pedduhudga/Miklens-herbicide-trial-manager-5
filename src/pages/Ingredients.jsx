@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useAppState } from '../hooks/useAppState.jsx';
 import TopBar from '../components/TopBar.jsx';
 import Modal from '../components/Modal.jsx';
-import { addIngredient, deleteIngredient } from '../services/db.js';
+import { addIngredient, deleteIngredient } from '../services/dataLayer.js';
 import { Edit, Trash2, Plus } from 'lucide-react';
 
 export default function Ingredients({ onMenuClick }) {

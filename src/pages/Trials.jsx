@@ -2,7 +2,7 @@ import React, { useState, useMemo, useRef, useEffect, useCallback } from 'react'
 import { useAppState } from '../hooks/useAppState.jsx';
 import TopBar from '../components/TopBar.jsx';
 import Modal from '../components/Modal.jsx';
-import { addTrial, deleteTrial, updateTrial } from '../services/db.js';
+import { addTrial, deleteTrial, updateTrial } from '../services/dataLayer.js';
 import {
   Plus, Trash2, Edit, Copy, ChevronRight, Activity, MapPin, Calendar,
   CheckCircle, Camera, Grid, Info, Sparkles, Search, Filter, X,

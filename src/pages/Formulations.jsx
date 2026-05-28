@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { useAppState } from '../hooks/useAppState.jsx';
 import TopBar from '../components/TopBar.jsx';
 import Modal from '../components/Modal.jsx';
-import { addFormulation, deleteFormulation } from '../services/db.js';
+import { addFormulation, deleteFormulation, updateFormulation } from '../services/dataLayer.js';
 import { safeJsonParse } from '../utils/helpers.js';
 import { Plus, X } from 'lucide-react';
 
