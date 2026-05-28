@@ -1599,19 +1599,27 @@ LANGUAGE AND TONE RULES — follow strictly:
 OUTPUT STRUCTURE — write exactly these 4 sections, nothing else:
 
 1. Application & Setup
-One sentence: product name, dosage (with proper units), application date (DD-Mon-YYYY), location coordinates, and all target weed species with scientific names in parentheses.
+One sentence. Start directly with the product name (no "Product X was applied" prefix — just "[Product name] was applied…"). Include dosage (with proper units), application date (DD-Mon-YYYY), coordinates, and all target weed species with scientific names in parentheses.
 
 2. Overall Efficacy Trajectory
-2-3 sentences. State total cover at DAA 0 first. Describe cover at each subsequent DAA. State whether any herbicidal injury symptoms or reduction in weed cover attributable to the product were observed. If cover increased, state factually: "Total weed cover increased from X% at DAA 0 to Y% at DAA Z, indicating inadequate weed control under the evaluated conditions." Do not over-interpret.
+Exactly 3 sentences. Follow this structure precisely:
+- Sentence 1: "At DAA 0, total weed cover was recorded at X%." (use "At DAA 0" — never "At 0 Days After Application (DAA 0)")
+- Sentence 2: "By DAA [last], total weed cover had increased to Y%, indicating inadequate weed control under the evaluated conditions." (combine the cover increase and interpretation into ONE sentence — do not state the cover increase twice)
+- Sentence 3: "No observable herbicidal injury symptoms or reduction in weed cover attributable to the treatment were detected during the observation period."
+Prefer the word "treatment" over "product" in the body text.
 
 3. Species-wise Performance
 For EACH species in the per-species breakdown — write the species heading (Common Name + Scientific Name), then 1-2 sentences:
+- Begin each species paragraph with "At DAA X," — never "At X Days After Application".
 - State cover value at each observed DAA factually.
-- Use phrases: "no measurable suppression or reduction in cover was observed", "no observable reduction in cover attributable to the treatment was detected", or "limited to no observable control" as appropriate.
-- After all species, close with ONE neutral summary sentence: "Overall, all evaluated species demonstrated negligible Weed Control Efficacy (WCE) under the tested field conditions." (adjust wording only if some species showed partial control).
+- For no-control cases use: "No measurable suppression or reduction in cover was observed for this species." or "No observable reduction in cover attributable to the treatment was detected."
+- For partial control only: "Minimal to no observable control was evident for this species." (never "Limited to no observable control")
+- After ALL species, write ONE closing summary sentence on its own line: "Overall, all evaluated species demonstrated negligible Weed Control Efficacy (WCE) under the tested field conditions." (adjust only if some species showed meaningful partial control).
 
 4. Control Duration Interpretation
-1-2 sentences only. Rate as Poor / Fair / Good / Excellent. The observation period length = the DAA of the last recorded observation (e.g. if last DAA is 38, write "38-day observation period", NOT 39). State cover values as evidence. Close with: "indicating insufficient weed control performance under the evaluated field conditions."`;
+Exactly 2 sentences. Follow this structure:
+- Sentence 1: "The [last DAA]-day observation period revealed no measurable reduction in weed cover across all evaluated species." (observation period = last DAA number exactly, not +1)
+- Sentence 2: "Treatment performance was categorized as [Poor/Fair/Good/Excellent], indicating insufficient weed control performance under the evaluated field conditions."`;
 
 
       // Use first available Gemini model (try 2.5-flash as reliable stable model)
