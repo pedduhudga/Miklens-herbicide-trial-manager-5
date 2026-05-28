@@ -11,7 +11,7 @@ import {
   QrCode, BrainCircuit, TrendingDown, Download, RefreshCw, Leaf,
   Navigation, FolderOpen, Lock, Unlock,
   FileDown, Share2, MoreVertical, FileSpreadsheet,
-  FileCode, MonitorPlay, Archive, Pencil, ScanLine, Crop
+  FileCode, MonitorPlay, Archive, Pencil, ScanLine, Crop, Clock
 } from 'lucide-react';
 import { safeJsonParse } from '../utils/helpers.js';
 import { calculateDAA } from '../utils/dateUtils.js';
@@ -108,6 +108,13 @@ export default function Trials({ onMenuClick }) {
 
   // --- AI single generation ---
   const [aiGenRunning, setAiGenRunning] = useState(false);
+
+  // --- Duplicate modal (formulation picker) ---
+  const [duplicateModal, setDuplicateModal] = useState(null); // trial to duplicate
+  const [duplicateFormulation, setDuplicateFormulation] = useState('');
+
+  // --- Quick-photo target (from card Photo button) ---
+  const [quickPhotoTrial, setQuickPhotoTrial] = useState(null);
 
   // --- Camera & Grid ---
   const [isCameraOpen, setIsCameraOpen] = useState(false);
@@ -1263,8 +1270,65 @@ export default function Trials({ onMenuClick }) {
   }, []);
 
   const handleDuplicate = useCallback((trial) => {
-    handleOpenModal(trial, true);
-  }, [handleOpenModal]);
+    setDuplicateFormulation(trial.FormulationName || '');
+    setDuplicateModal(trial);
+  }, []);
+
+  const handleDuplicateConfirm = useCallback(async () => {
+    if (!duplicateModal) return;
+    const trial = duplicateModal;
+    setDuplicateModal(null);
+    const formMatch = formulations.find(f => f.Name === duplicateFormulation);
+    const payload = {
+      ...trial,
+      ID: undefined,
+      FormulationName: duplicateFormulation,
+      FormulationID: formMatch ? formMatch.ID : (trial.FormulationID || ''),
+      Date: new Date().toISOString().split('T')[0],
+      IsCompleted: false, ControlFinalized: false,
+      FinalizationDate: '', FinalControlDuration: '',
+      PhotoURLs: '[]', WeedPhotosJSON: '[]',
+      EfficacyDataJSON: '[]', StatisticsJSON: '',
+      Result: '', Conclusion: '', IsLive: true,
+    };
+    delete payload.ID;
+    try {
+      const result = await addTrial(payload, getAppState);
+      const newTrial = { ...payload, ID: result.ID || result.id || Date.now().toString() };
+      updateState({ trials: [newTrial, ...trials] });
+      window.dispatchEvent(new CustomEvent('app:toast', { detail: { msg: `Duplicated as "${duplicateFormulation}"`, type: 'success' } }));
+    } catch(e) {
+      window.dispatchEvent(new CustomEvent('app:toast', { detail: { msg: 'Duplicate failed', type: 'error' } }));
+    }
+  }, [duplicateModal, duplicateFormulation, formulations, trials, getAppState, updateState]);
+
+  const handleQuickRate = useCallback(async (trial, rating) => {
+    const updated = { ...trial, Result: rating };
+    updateState({ trials: trials.map(t => t.ID === updated.ID ? updated : t) });
+    try { await updateTrial({ ID: updated.ID, Result: rating }, getAppState); } catch(e) {}
+    window.dispatchEvent(new CustomEvent('app:toast', { detail: { msg: `Rated "${rating}"`, type: 'success' } }));
+  }, [trials, getAppState, updateState]);
+
+  const handleMarkComplete = useCallback(async (trial) => {
+    if (!window.confirm(`Mark "${trial.FormulationName}" as completed? This will stop control day counting and deactivate the trial.`)) return;
+    const finDate = new Date().toISOString().split('T')[0];
+    const start = trial.Date ? new Date(trial.Date) : new Date();
+    const days = Math.max(0, Math.round((new Date() - start) / 86400000));
+    const finalDuration = trial.FinalControlDuration || String(days);
+    const updated = { ...trial, IsCompleted: true, IsLive: false, FinalizationDate: finDate, FinalControlDuration: finalDuration };
+    updateState({ trials: trials.map(t => t.ID === updated.ID ? updated : t) });
+    if (activeTrial?.ID === updated.ID) setActiveTrial(updated);
+    try {
+      await updateTrial({ ID: updated.ID, IsCompleted: true, IsLive: false, FinalizationDate: finDate, FinalControlDuration: finalDuration }, getAppState);
+      window.dispatchEvent(new CustomEvent('app:toast', { detail: { msg: `Trial completed — ${finalDuration} control days recorded`, type: 'success' } }));
+    } catch(e) {}
+  }, [trials, activeTrial, getAppState, updateState]);
+
+  const handleQuickPhoto = useCallback((trial) => {
+    setActiveTrial(trial);
+    setCameraMode('general');
+    setIsCameraOpen(true);
+  }, []);
 
   const handleActivateToggle = useCallback(async (trial) => {
     const updated = { ...trial, IsLive: String(trial.IsLive) !== 'false' ? false : true };
@@ -1600,6 +1664,9 @@ Write a professional, concise narrative summary.`;
                   onAiGenerate={handleAiSingleGenerate}
                   onDelete={handleDelete}
                   onActivateToggle={handleActivateToggle}
+                  onQuickRate={handleQuickRate}
+                  onQuickPhoto={handleQuickPhoto}
+                  onMarkComplete={handleMarkComplete}
                 />
               ))}
             </div>
@@ -1684,6 +1751,51 @@ Write a professional, concise narrative summary.`;
                 clearBulk();
                 window.dispatchEvent(new CustomEvent('app:toast', { detail: { msg: `${ids.length} trials updated`, type: 'success' } }));
               }} className="btn-primary px-5 py-2 rounded-lg text-sm font-semibold">Apply to {selectedForBulk.size} Trials</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── DUPLICATE MODAL ── */}
+      {duplicateModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-6 space-y-4">
+            <div className="flex items-center justify-between">
+              <h3 className="font-bold text-lg text-slate-800 flex items-center gap-2">
+                <Copy className="w-5 h-5 text-emerald-500" /> Duplicate Trial
+              </h3>
+              <button onClick={() => setDuplicateModal(null)} className="p-1.5 hover:bg-slate-100 rounded-lg"><X className="w-4 h-4" /></button>
+            </div>
+            <p className="text-xs text-slate-500">Copying from: <span className="font-semibold text-slate-700">{duplicateModal.FormulationName}</span></p>
+            <div>
+              <label className="block text-xs font-semibold text-slate-600 uppercase mb-1">Select Formulation for New Trial *</label>
+              <select
+                value={duplicateFormulation}
+                onChange={e => setDuplicateFormulation(e.target.value)}
+                className="w-full px-3 py-2 text-sm border rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-emerald-400"
+              >
+                <option value="">— Select formulation —</option>
+                {formulations.map(f => <option key={f.ID} value={f.Name}>{f.Name}</option>)}
+              </select>
+              <p className="text-xs text-slate-400 mt-1">Or type a custom name:</p>
+              <input
+                type="text"
+                value={duplicateFormulation}
+                onChange={e => setDuplicateFormulation(e.target.value)}
+                placeholder="Custom formulation name..."
+                className="w-full mt-1 px-3 py-2 text-sm border rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-400"
+              />
+            </div>
+            <p className="text-xs text-slate-400 bg-slate-50 rounded-lg p-2 border">Location, dosage, weed species and other settings will be copied. Photos, observations and results will be cleared.</p>
+            <div className="flex gap-2 justify-end">
+              <button onClick={() => setDuplicateModal(null)} className="px-4 py-2 text-sm rounded-lg border text-slate-600 hover:bg-slate-50">Cancel</button>
+              <button
+                onClick={handleDuplicateConfirm}
+                disabled={!duplicateFormulation.trim()}
+                className="px-4 py-2 text-sm font-semibold rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50"
+              >
+                Duplicate
+              </button>
             </div>
           </div>
         </div>
@@ -1961,6 +2073,7 @@ Write a professional, concise narrative summary.`;
                       ['Project', projects.find(p => p.ID === detailTrial.ProjectID)?.Name || '—', FolderPlus],
                       ['Replication', detailTrial.Replication || '—', Hash],
                       ['Plot #', detailTrial.PlotNumber || '—', Hash],
+                      ['Control Days', (() => { if (detailTrial.FinalControlDuration) return `${detailTrial.FinalControlDuration}d (finalized)`; if (!detailTrial.Date) return '—'; const d = Math.max(0, Math.round((new Date() - new Date(detailTrial.Date)) / 86400000)); return `${d}d (running)`; })(), Clock],
                       ...(detailTrial.YieldValue ? [['Yield (t/ha)', detailTrial.YieldValue, Leaf]] : []),
                     ].map(([label, val, Icon]) => (
                       <div key={label} className="bg-slate-50 rounded-lg p-3">

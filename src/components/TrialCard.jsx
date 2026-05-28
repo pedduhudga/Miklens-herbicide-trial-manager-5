@@ -1,5 +1,5 @@
 import React, { memo, useMemo, useCallback } from 'react';
-import { Calendar, MapPin, FlaskConical, Activity, Image, ChevronRight, Edit, MoreVertical, Eye, Copy, FolderOpen, FileDown, ScanLine, MonitorPlay, Archive, FileCode, FileSpreadsheet, Share2, BrainCircuit, Trash2 } from 'lucide-react';
+import { Calendar, MapPin, FlaskConical, Activity, Image, ChevronRight, Edit, MoreVertical, Eye, Copy, FolderOpen, FileDown, ScanLine, MonitorPlay, Archive, FileCode, FileSpreadsheet, Share2, BrainCircuit, Trash2, Camera, CheckCircle, Clock } from 'lucide-react';
 import { safeJsonParse } from '../utils/helpers.js';
 
 const RESULT_COLORS = {
@@ -40,11 +40,24 @@ const TrialCard = memo(function TrialCard({
   onShare,
   onAiGenerate,
   onDelete,
-  onActivateToggle
+  onActivateToggle,
+  onQuickRate,
+  onQuickPhoto,
+  onMarkComplete,
 }) {
   const photos = useMemo(() => safeJsonParse(trial.PhotoURLs, []), [trial.PhotoURLs]);
   const efficacyData = useMemo(() => safeJsonParse(trial.EfficacyDataJSON, []), [trial.EfficacyDataJSON]);
   const isLive = String(trial.IsLive) !== 'false';
+  const isCompleted = trial.IsCompleted === true || trial.IsCompleted === 'true';
+
+  // Control days calculation
+  const controlDays = useMemo(() => {
+    if (trial.FinalControlDuration) return parseInt(trial.FinalControlDuration, 10);
+    if (!trial.Date) return null;
+    const start = new Date(trial.Date);
+    const end = isCompleted && trial.FinalizationDate ? new Date(trial.FinalizationDate) : new Date();
+    return Math.max(0, Math.round((end - start) / 86400000));
+  }, [trial.Date, trial.FinalControlDuration, trial.FinalizationDate, isCompleted]);
 
   const handleCardClick = useCallback(() => {
     onToggleBulk(trial.ID);
@@ -128,6 +141,21 @@ const TrialCard = memo(function TrialCard({
   const handleActivateToggle = useCallback(() => {
     onActivateToggle(trial);
   }, [onActivateToggle, trial]);
+
+  const handleQuickRate = useCallback((e, rating) => {
+    e.stopPropagation();
+    onQuickRate && onQuickRate(trial, rating);
+  }, [onQuickRate, trial]);
+
+  const handleQuickPhoto = useCallback((e) => {
+    e.stopPropagation();
+    onQuickPhoto && onQuickPhoto(trial);
+  }, [onQuickPhoto, trial]);
+
+  const handleMarkComplete = useCallback((e) => {
+    e.stopPropagation();
+    onMarkComplete && onMarkComplete(trial);
+  }, [onMarkComplete, trial]);
 
   const stopPropagation = useCallback((e) => e.stopPropagation(), []);
 
@@ -223,6 +251,30 @@ const TrialCard = memo(function TrialCard({
           <div className="flex items-center gap-1.5"><MapPin className="w-3.5 h-3.5 shrink-0" /><span className="truncate">{trial.Location || '—'}</span></div>
           <div className="flex items-center gap-1.5"><FlaskConical className="w-3.5 h-3.5 shrink-0" /><span className="truncate">{trial.Dosage || '—'}</span></div>
           {trial.WeedSpecies && <div className="flex items-center gap-1.5"><Activity className="w-3.5 h-3.5 shrink-0" /><span className="truncate">{trial.WeedSpecies}</span></div>}
+          {controlDays !== null && (
+            <div className="flex items-center gap-1.5">
+              <Clock className="w-3.5 h-3.5 shrink-0" />
+              <span className={isCompleted ? 'text-emerald-600 font-semibold' : 'text-blue-600 font-semibold'}>
+                {controlDays}d control{isCompleted ? ' (finalized)' : ''}
+              </span>
+            </div>
+          )}
+        </div>
+
+        {/* Quick Rating */}
+        <div className="mt-2 flex items-center gap-1" onClick={stopPropagation}>
+          <span className="text-[10px] text-slate-400 mr-0.5">Rate:</span>
+          {[['Excellent','bg-emerald-500'],['Good','bg-blue-500'],['Fair','bg-amber-500'],['Poor','bg-red-500']].map(([r, col]) => (
+            <button key={r} onClick={e => handleQuickRate(e, r)}
+              title={r}
+              className={`text-[9px] font-bold px-1.5 py-0.5 rounded transition ${
+                trial.Result === r
+                  ? `${col} text-white`
+                  : 'bg-slate-100 text-slate-500 hover:bg-slate-200'
+              }`}>
+              {r[0]}
+            </button>
+          ))}
         </div>
 
         <div className="mt-3 flex items-center gap-2 flex-wrap">
@@ -236,19 +288,33 @@ const TrialCard = memo(function TrialCard({
             <span className={`w-2 h-2 rounded-full ${isLive ? 'bg-green-500' : 'bg-slate-400'}`} />
             <span className={`text-[10px] font-bold ${isLive ? 'text-green-700' : 'text-slate-500'}`}>{isLive ? 'LIVE' : 'INACTIVE'}</span>
           </div>
-          <button
-            onClick={handleActivateToggle}
-            className={`text-[10px] font-bold px-2 py-0.5 rounded border transition ${
-              isLive
-                ? 'bg-amber-50 text-amber-700 border-amber-200 hover:bg-amber-100'
-                : 'bg-green-50 text-green-700 border-green-200 hover:bg-green-100'
-            }`}>
-            {isLive ? 'Deactivate' : 'Activate'}
-          </button>
+          <div className="flex items-center gap-1">
+            {!isCompleted && (
+              <button onClick={handleMarkComplete}
+                title="Mark as Completed"
+                className="text-[10px] font-bold px-2 py-0.5 rounded border bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100 flex items-center gap-0.5 transition">
+                <CheckCircle className="w-3 h-3" /> Done
+              </button>
+            )}
+            <button
+              onClick={handleActivateToggle}
+              className={`text-[10px] font-bold px-2 py-0.5 rounded border transition ${
+                isLive
+                  ? 'bg-amber-50 text-amber-700 border-amber-200 hover:bg-amber-100'
+                  : 'bg-green-50 text-green-700 border-green-200 hover:bg-green-100'
+              }`}>
+              {isLive ? 'Deactivate' : 'Activate'}
+            </button>
+          </div>
         </div>
       </div>
 
-      <div className="border-t px-4 py-2.5 flex justify-end" onClick={stopPropagation}>
+      <div className="border-t px-3 py-2 flex items-center justify-between" onClick={stopPropagation}>
+        <button onClick={handleQuickPhoto}
+          title="Add Photo"
+          className="flex items-center gap-1 text-[11px] font-semibold text-blue-600 hover:bg-blue-50 px-2 py-1 rounded-lg transition">
+          <Camera className="w-3.5 h-3.5" /> Photo
+        </button>
         <button onClick={() => onViewDetails(trial)}
           className="text-xs text-emerald-600 font-semibold flex items-center gap-1 hover:underline">
           View Details <ChevronRight className="w-3.5 h-3.5" />
