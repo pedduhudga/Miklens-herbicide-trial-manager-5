@@ -103,6 +103,9 @@ export default function Trials({ onMenuClick }) {
   // --- Photo edit modal ---
   const [photoEditModal, setPhotoEditModal] = useState(null); // { idx, label, date }
 
+  // --- Photo date prompt (shown after crop, before AI analysis) ---
+  const [pendingPhotoAnalysis, setPendingPhotoAnalysis] = useState(null); // { dataUrl, date }
+
   // --- AI single generation ---
   const [aiGenRunning, setAiGenRunning] = useState(false);
 
@@ -640,11 +643,11 @@ export default function Trials({ onMenuClick }) {
     }
   };
 
-  const saveAndAnalyzePhoto = async (dataUrl) => {
+  const saveAndAnalyzePhoto = async (dataUrl, photoDateStr) => {
     if (!activeTrial) return;
     window.dispatchEvent(new CustomEvent('app:toast', { detail: { msg: 'Photo saved! Starting AI analysis...', type: 'info' } }));
 
-    const photoDate = new Date().toISOString();
+    const photoDate = photoDateStr || new Date().toISOString().split('T')[0];
     const photos = safeJsonParse(activeTrial.PhotoURLs, []);
     photos.push({ fileData: dataUrl, date: photoDate, label: cameraMode === 'weed' ? 'Weed Photo' : 'Field Observation', identifications: [] });
     const updated = { ...activeTrial, PhotoURLs: JSON.stringify(photos) };
@@ -658,6 +661,25 @@ export default function Trials({ onMenuClick }) {
       const pDate = new Date(photoDate);
       const daa = Math.max(0, Math.round((pDate.getTime() - trialDate.getTime()) / (1000 * 60 * 60 * 24)));
 
+      // Auto-fetch weather for the trial's GPS location
+      if (activeTrial?.Lat && activeTrial?.Lon) {
+        try {
+          const wUrl = `https://api.open-meteo.com/v1/forecast?latitude=${activeTrial.Lat}&longitude=${activeTrial.Lon}&current=temperature_2m,relative_humidity_2m,wind_speed_10m,precipitation&wind_speed_unit=kmh`;
+          const wr = await fetch(wUrl);
+          const wd = await wr.json();
+          const wc = wd.current;
+          if (wc) {
+            setObsForm(prev => ({ ...prev,
+              weatherTemp: wc.temperature_2m ?? prev.weatherTemp,
+              weatherHumidity: wc.relative_humidity_2m ?? prev.weatherHumidity,
+              weatherWind: wc.wind_speed_10m ?? prev.weatherWind,
+              weatherRain: wc.precipitation ?? prev.weatherRain,
+            }));
+            window.dispatchEvent(new CustomEvent('app:toast', { detail: { msg: `Weather fetched: ${wc.temperature_2m}°C, wind ${wc.wind_speed_10m} km/h`, type: 'info' } }));
+          }
+        } catch(we) { console.warn('Weather fetch failed:', we.message); }
+      }
+
       const result = await analyzePhoto(dataUrl, {
         treatment: activeTrial.FormulationName,
         daa,
@@ -669,6 +691,12 @@ export default function Trials({ onMenuClick }) {
       if (result.success) {
         await createObservationFromAI(activeTrial, daa, result.data);
         window.dispatchEvent(new CustomEvent('app:toast', { detail: { msg: `AI complete! Logged ${result.data.weeds?.length || 0} weed species at DAA ${daa}`, type: 'success' } }));
+        // Auto-run cover detection in background
+        detectWeedCoverAI(dataUrl).then(coverResult => {
+          if (coverResult?.cover != null) {
+            window.dispatchEvent(new CustomEvent('app:toast', { detail: { msg: `Cover detected: ${coverResult.cover}% (${coverResult.source})`, type: 'info' } }));
+          }
+        }).catch(() => {});
       } else {
         window.dispatchEvent(new CustomEvent('app:toast', { detail: { msg: 'AI analysis skipped: ' + result.error, type: 'warning' } }));
       }
@@ -677,10 +705,14 @@ export default function Trials({ onMenuClick }) {
     }
   };
 
+  const promptPhotoDate = (dataUrl) => {
+    setPendingPhotoAnalysis({ dataUrl, date: new Date().toISOString().split('T')[0] });
+  };
+
   const handleCapturePhoto = (dataUrl) => {
     if (!activeTrial) return;
     setIsCameraOpen(false);
-    openCropperFor(dataUrl, saveAndAnalyzePhoto);
+    openCropperFor(dataUrl, promptPhotoDate);
   };
 
   const handleFileUpload = async (e) => {
@@ -689,7 +721,7 @@ export default function Trials({ onMenuClick }) {
     const reader = new FileReader();
     reader.onload = (ev) => {
       e.target.value = '';
-      openCropperFor(ev.target.result, saveAndAnalyzePhoto);
+      openCropperFor(ev.target.result, promptPhotoDate);
     };
     reader.readAsDataURL(file);
   };
@@ -2889,6 +2921,47 @@ Write a professional, concise narrative summary.`;
             <div className="flex justify-end gap-3 pt-2 border-t">
               <button onClick={() => setPhotoEditModal(null)} className="px-4 py-2 text-sm text-slate-600 hover:bg-slate-100 rounded-lg font-medium">Cancel</button>
               <button onClick={handleSavePhotoEdit} className="btn-primary px-5 py-2 rounded-lg text-sm font-semibold">Save</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── PHOTO DATE PROMPT MODAL ── */}
+      {pendingPhotoAnalysis && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-6 space-y-4">
+            <div className="flex items-center justify-between">
+              <h3 className="font-bold text-slate-800 flex items-center gap-2">
+                <Sparkles className="w-4 h-4 text-violet-500" /> When was this photo taken?
+              </h3>
+              <button onClick={() => setPendingPhotoAnalysis(null)} className="p-1.5 hover:bg-slate-100 rounded-lg"><X className="w-4 h-4" /></button>
+            </div>
+            <p className="text-xs text-slate-500">The date determines the <strong>Days After Application (DAA)</strong> for the observation record.</p>
+            <div>
+              <label className="block text-xs font-semibold text-slate-500 uppercase mb-1">Photo Date</label>
+              <input type="date"
+                value={pendingPhotoAnalysis.date}
+                max={new Date().toISOString().split('T')[0]}
+                onChange={e => setPendingPhotoAnalysis(p => ({ ...p, date: e.target.value }))}
+                className="w-full px-3 py-2 text-sm border rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-400" />
+            </div>
+            {activeTrial?.Date && pendingPhotoAnalysis.date && (
+              <div className="bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-2 text-xs text-emerald-800">
+                DAA: <strong>{Math.max(0, Math.round((new Date(pendingPhotoAnalysis.date) - new Date(activeTrial.Date)) / 86400000))}</strong> days after application
+                {activeTrial?.Lat && activeTrial?.Lon && <span className="ml-2 text-emerald-600">• Weather will be auto-fetched</span>}
+              </div>
+            )}
+            <div className="flex justify-end gap-3 pt-2 border-t">
+              <button onClick={() => setPendingPhotoAnalysis(null)} className="px-4 py-2 text-sm text-slate-600 hover:bg-slate-100 rounded-lg font-medium">Cancel</button>
+              <button
+                onClick={() => {
+                  const { dataUrl, date } = pendingPhotoAnalysis;
+                  setPendingPhotoAnalysis(null);
+                  saveAndAnalyzePhoto(dataUrl, date);
+                }}
+                className="px-5 py-2 rounded-lg text-sm font-semibold bg-violet-600 text-white hover:bg-violet-700 flex items-center gap-2">
+                <Sparkles className="w-3.5 h-3.5" /> Analyse Photo
+              </button>
             </div>
           </div>
         </div>
