@@ -332,10 +332,9 @@ export async function fbGetAllData(userId, isAdmin = false) {
       fbGetIngredients(ownerId),
       fbGetOrganisations(ownerId),
       fbGetProjects(ownerId),
-      fbGetBlocks(ownerId),
-      fbGetAiChatSessions(userId),
+      fbGetBlocks(ownerId)
     ]);
-  return { trials, formulations, ingredients, organisations, projects, blocks, aiChatSessions };
+  return { trials, formulations, ingredients, organisations, projects, blocks };
 }
 
 // ─── AI Chat Sessions ────────────────────────────────────────────────────────
