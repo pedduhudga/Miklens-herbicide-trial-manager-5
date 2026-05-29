@@ -3,6 +3,7 @@ import { useAppState } from '../hooks/useAppState.jsx';
 import TopBar from '../components/TopBar.jsx';
 import { Sparkles, SendHorizontal, Trash2, Copy, Check, Paperclip, X, Mic, MicOff, Image, Search, PlusCircle, MessageSquare } from 'lucide-react';
 import { safeJsonParse } from '../utils/helpers.js';
+import { _callGeminiApiWithRetries } from '../services/ai.js';
 
 const SUGGESTED_PROMPTS = [
   'Which formulation has the highest average efficacy across all trials?',
@@ -11,53 +12,6 @@ const SUGGESTED_PROMPTS = [
   'Which trials have no observations recorded yet?',
   'Compare the efficacy of trials with Excellent vs Good result ratings.',
 ];
-
-async function callGeminiWithRetries(payload, getAppState, isImage = false) {
-  const st = getAppState();
-  const apiKeys = st?.settings?.apiKeys || [];
-  if (apiKeys.length === 0) throw new Error('No Gemini API key configured. Go to Settings → AI Keys to add one.');
-  const model = st?.settings?.selectedModel || 'gemini-2.0-flash';
-
-  let currentKeyIndex = st?.settings?.currentApiKeyIndex || 0;
-  let attempts = 0;
-  const maxAttempts = apiKeys.length;
-
-  while (attempts < maxAttempts) {
-    const rawKey = apiKeys[currentKeyIndex];
-    const key = rawKey?.key || rawKey;
-
-    try {
-      const res = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`,
-        { method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload) }
-      );
-
-      if (!res.ok) {
-        if (res.status === 429) {
-          // Quota exceeded or too many requests. Try next key.
-          currentKeyIndex = (currentKeyIndex + 1) % apiKeys.length;
-          attempts++;
-          continue;
-        }
-        const err = await res.json().catch(() => ({}));
-        throw new Error(err?.error?.message || `HTTP ${res.status}`);
-      }
-
-      const data = await res.json();
-      return data?.candidates?.[0]?.content?.parts?.[0]?.text || 'No response from AI.';
-    } catch (err) {
-      if (err.message && err.message.includes('429')) {
-         currentKeyIndex = (currentKeyIndex + 1) % apiKeys.length;
-         attempts++;
-         continue;
-      }
-      throw err;
-    }
-  }
-
-  throw new Error('All API keys exhausted or rate limited. Please check your plan and billing details or try again later.');
-}
 
 export default function AIAssistant({ onMenuClick }) {
   const { state, updateState, getAppState } = useAppState();
@@ -242,20 +196,32 @@ You must optimize for fast answers and strictly incorporate product formulation 
 
       const fullPrompt = `${systemCtx}\n\nUser: ${userMsg}`;
       let reply;
-      if (img) {
-        const payload = {
-          contents: [{ parts: [
-            { text: `${systemCtx}\n\nUser: ${userMsg}` },
-            { inlineData: { mimeType: img.mimeType, data: img.base64 } }
-          ] }]
-        };
-        reply = await callGeminiWithRetries(payload, getAppState, true);
-      } else {
-        const payload = {
-          contents: [{ parts: [{ text: fullPrompt }] }]
-        };
-        reply = await callGeminiWithRetries(payload, getAppState, false);
-      }
+
+      // We wrap the API call logic into a function that _callGeminiApiWithRetries can pass the genAI client into
+      const geminiCall = async (genAI) => {
+        // Because of the way ai.js handles the client, it returns a configured GoogleGenerativeAI client.
+        // Get the active model as defined globally in the app
+        const modelName = window._getActiveApiModel ? window._getActiveApiModel() : (state.settings?.selectedModel || 'gemini-2.0-flash');
+        const aiModel = genAI.getGenerativeModel({ model: modelName });
+
+        if (img) {
+          const result = await aiModel.generateContent([
+             `${systemCtx}\n\nUser: ${userMsg}`,
+             {
+               inlineData: {
+                 data: img.base64,
+                 mimeType: img.mimeType
+               }
+             }
+          ]);
+          return result.response.text();
+        } else {
+          const result = await aiModel.generateContent(fullPrompt);
+          return result.response.text();
+        }
+      };
+
+      reply = await _callGeminiApiWithRetries(geminiCall, getAppState);
 
       const sessionIndex = newSessions.findIndex(s => s.id === activeSessionId);
       if (sessionIndex !== -1) {
