@@ -352,3 +352,30 @@ export async function uploadPhoto(payload, getAppState) {
 
 // ─── Re-export apiCall for anything that still needs raw access ───────────────
 export { apiCall } from './db.js';
+
+// ─── AI Chat Sessions ────────────────────────────────────────────────────────
+export async function getAiChatSessions(payload, getAppState) {
+  const { useFirebase } = getConfig(getAppState);
+  if (useFirebase) {
+    const uid = getUserId(getAppState);
+    return fbDB.fbGetAiChatSessions(uid);
+  }
+  return []; // Not supported in sheets for now
+}
+
+export async function saveAiChatSession(payload, getAppState) {
+  const { useFirebase } = getConfig(getAppState);
+  if (useFirebase) {
+    const uid = getUserId(getAppState);
+    return fbDB.fbSaveAiChatSession(payload, uid);
+  }
+  return payload; // Fallback to local storage for sheets
+}
+
+export async function deleteAiChatSession(payload, getAppState) {
+  const { useFirebase } = getConfig(getAppState);
+  if (useFirebase) {
+    return fbDB.fbDeleteAiChatSession(payload.id);
+  }
+  return { success: true };
+}
