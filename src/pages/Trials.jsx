@@ -3060,19 +3060,62 @@ Exactly 2 sentences. Follow this structure:
                   ) : (() => {
                     const LIVE_FIELDS = [
                       { key: 'showFormulationName', label: 'Product Name' },
-                      { key: 'showInvestigatorName', label: 'Investigator' },
+                      { key: 'showInvestigator', label: 'Investigator' },
                       { key: 'showDate', label: 'Application Date' },
                       { key: 'showDosage', label: 'Dosage' },
                       { key: 'showLocation', label: 'Location' },
                       { key: 'showWeedSpecies', label: 'Target Weeds' },
-                      { key: 'showReplication', label: 'Replication' },
                       { key: 'showResult', label: 'Result' },
-                      { key: 'showObservations', label: 'Observations / Efficacy' },
+                      { key: 'showWeather', label: 'Weather' },
+                      { key: 'showIngredients', label: 'Ingredients' },
+                      { key: 'showConclusion', label: 'Conclusion & Notes' },
                       { key: 'showPhotos', label: 'Field Photos' },
+                      { key: 'showObservations', label: 'Observations / Efficacy' },
                       { key: 'showAISummary', label: 'AI Narrative' },
+                      { key: 'showReplication', label: 'Replication' },
                     ];
-                    const defaultOn = LIVE_FIELDS.reduce((a, f) => ({ ...a, [f.key]: true }), {});
-                    const liveSettings = { ...defaultOn, ...safeJsonParse(detailTrial?.LiveQRSettings, {}) };
+                    const defaultOn = {
+                      showFormulationName: true,
+                      showInvestigator: true,
+                      showDate: true,
+                      showDosage: true,
+                      showLocation: true,
+                      showWeedSpecies: true,
+                      showResult: true,
+                      showWeather: true,
+                      showIngredients: false,
+                      showConclusion: true,
+                      showPhotos: true,
+                      showObservations: false,
+                      showAISummary: false,
+                      showReplication: false,
+                    };
+                    const globalOnlineRaw = state.settings?.qrOnlineFields;
+                    const globalOnlineDefaults = Array.isArray(globalOnlineRaw)
+                      ? {
+                          ...defaultOn,
+                          showFormulationName: globalOnlineRaw.includes('FormulationName'),
+                          showInvestigator: globalOnlineRaw.includes('InvestigatorName'),
+                          showDate: globalOnlineRaw.includes('Date'),
+                          showDosage: globalOnlineRaw.includes('Dosage'),
+                          showLocation: globalOnlineRaw.includes('Location'),
+                          showWeedSpecies: globalOnlineRaw.includes('WeedSpecies'),
+                          showResult: globalOnlineRaw.includes('Result'),
+                          showWeather: globalOnlineRaw.includes('Weather'),
+                          showConclusion: globalOnlineRaw.includes('Conclusion'),
+                          showPhotos: globalOnlineRaw.includes('Photos'),
+                        }
+                      : (globalOnlineRaw && typeof globalOnlineRaw === 'object'
+                        ? { ...defaultOn, ...globalOnlineRaw }
+                        : defaultOn);
+                    const rawLiveSettings = safeJsonParse(detailTrial?.LiveQRSettings, {});
+                    const liveSettings = {
+                      ...globalOnlineDefaults,
+                      ...rawLiveSettings,
+                      ...(Object.prototype.hasOwnProperty.call(rawLiveSettings, 'showInvestigatorName')
+                        ? { showInvestigator: rawLiveSettings.showInvestigatorName }
+                        : {}),
+                    };
 
                     const handleToggleLiveField = async (fieldKey) => {
                       const updated = { ...liveSettings, [fieldKey]: !liveSettings[fieldKey] };
