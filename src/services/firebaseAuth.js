@@ -23,11 +23,24 @@ async function getUserProfile(uid) {
 
 async function createUserProfile(uid, profileData) {
   const db = getFirebaseDB();
+
+  // Auto-promote first user or admin emails to Admin
+  let isFirstUser = false;
+  try {
+    const snap = await getDocs(collection(db, COLLECTIONS.users));
+    if (snap.empty) isFirstUser = true;
+  } catch (e) {
+    // If rules block listing users, we assume not first
+  }
+
+  const emailLower = (profileData.email || '').toLowerCase();
+  const autoAdmin = isFirstUser || emailLower.includes('admin');
+
   const record = {
     ID: uid,
     Username: profileData.email,
     Name: profileData.name || profileData.displayName || profileData.email,
-    Role: profileData.role || 'User',
+    Role: profileData.role || (autoAdmin ? 'Admin' : 'User'),
     IsActive: true,
     DriveFolderId: profileData.DriveFolderId || '',
     ApiKeysJSON: '[]',

@@ -70,7 +70,7 @@ const DEFAULT_ONLINE_QR_SETTINGS = {
 };
 
 export default function Settings({ onMenuClick }) {
-  const { state, updateSettings, updateState } = useAppState();
+  const { state, updateSettings, updateState, getAppState } = useAppState();
   const { logout, user } = useAuth();
   const [newKey, setNewKey] = useState("");
   const [testingKey, setTestingKey] = useState(null);
@@ -279,6 +279,20 @@ export default function Settings({ onMenuClick }) {
           console.warn("Firebase settings sync failed:", firebaseErr);
         }
 
+        // Also sync settings to Google Sheets if user is an admin and scriptUrl is set
+        if (isAdminUser && s.scriptUrl) {
+          try {
+            await apiCall(
+              "saveAllSettings",
+              { settings: settingsToPersist },
+              false,
+              getAppState,
+            );
+          } catch (e) {
+            console.warn("Sheet settings sync failed:", e);
+          }
+        }
+
         toast("Settings saved");
         return;
       }
@@ -291,7 +305,7 @@ export default function Settings({ onMenuClick }) {
           "saveAllSettings",
           { settings: settingsToPersist },
           false,
-          () => state,
+          getAppState,
         );
         if (result?._errType) {
           toast(
@@ -317,7 +331,7 @@ export default function Settings({ onMenuClick }) {
           ApiKeysJSON: JSON.stringify(apiKeys),
         },
         false,
-        () => state,
+        getAppState,
       );
 
       if (userConfig?._errType) {
