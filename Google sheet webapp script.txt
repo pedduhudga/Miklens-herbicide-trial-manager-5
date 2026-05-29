@@ -122,8 +122,19 @@ function executeAction(action, payload, auth) {
     // --- AUTHENTICATION CHECK ---
     if (!auth || !auth.ID) throw new Error("Authentication required. Please log in.");
 
-    const authUser = getUserById(ss, auth.ID);
-    if (!authUser) throw new Error('Invalid session user. Please log in again.');
+    let authUser = getUserById(ss, auth.ID);
+
+    // If not found in Sheets but we have auth from Firebase (auth.authProvider === 'firebase' or it has a valid Role),
+    // accept the payload auth as authoritative.
+    // This allows Firebase users to interact with the sheet mirror and upload photos.
+    if (!authUser) {
+        if (auth.Role) {
+            authUser = { ...auth, IsActive: 'true' };
+        } else {
+            throw new Error('Invalid session user. Please log in again.');
+        }
+    }
+
     if (String(authUser.IsActive || 'true').toLowerCase() === 'false') {
         throw new Error('Account is disabled. Contact administrator.');
     }
@@ -134,8 +145,8 @@ function executeAction(action, payload, auth) {
         Username: authUser.Username || auth.Username || '',
         Name: authUser.Name || auth.Name || '',
         Role: authUser.Role || auth.Role || 'User',
-        DriveFolderId: authUser.DriveFolderId || '',
-        ApiKeysJSON: authUser.ApiKeysJSON || '[]'
+        DriveFolderId: authUser.DriveFolderId || auth.DriveFolderId || '',
+        ApiKeysJSON: authUser.ApiKeysJSON || auth.ApiKeysJSON || '[]'
     };
 
     const actions = {
