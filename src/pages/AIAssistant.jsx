@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from 'react';
 import { useAppState } from '../hooks/useAppState.jsx';
 import TopBar from '../components/TopBar.jsx';
-import { Sparkles, SendHorizontal, Trash2, Copy, Check, Paperclip, X, Mic, MicOff, Image, Search } from 'lucide-react';
+import { Sparkles, SendHorizontal, Trash2, Copy, Check, Paperclip, X, Mic, MicOff, Image, Search, PlusCircle, MessageSquare } from 'lucide-react';
 import { safeJsonParse } from '../utils/helpers.js';
 
 const SUGGESTED_PROMPTS = [
@@ -12,25 +12,51 @@ const SUGGESTED_PROMPTS = [
   'Compare the efficacy of trials with Excellent vs Good result ratings.',
 ];
 
-async function callGemini(prompt, getAppState) {
+async function callGeminiWithRetries(payload, getAppState, isImage = false) {
   const st = getAppState();
   const apiKeys = st?.settings?.apiKeys || [];
-  const key = (apiKeys[st?.settings?.currentApiKeyIndex || 0])?.key
-    || apiKeys[st?.settings?.currentApiKeyIndex || 0]
-    || apiKeys[0]?.key || apiKeys[0];
-  if (!key) throw new Error('No Gemini API key configured. Go to Settings → AI Keys to add one.');
+  if (apiKeys.length === 0) throw new Error('No Gemini API key configured. Go to Settings → AI Keys to add one.');
   const model = st?.settings?.selectedModel || 'gemini-2.0-flash';
-  const res = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`,
-    { method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] }) }
-  );
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err?.error?.message || `HTTP ${res.status}`);
+
+  let currentKeyIndex = st?.settings?.currentApiKeyIndex || 0;
+  let attempts = 0;
+  const maxAttempts = apiKeys.length;
+
+  while (attempts < maxAttempts) {
+    const rawKey = apiKeys[currentKeyIndex];
+    const key = rawKey?.key || rawKey;
+
+    try {
+      const res = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`,
+        { method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload) }
+      );
+
+      if (!res.ok) {
+        if (res.status === 429) {
+          // Quota exceeded or too many requests. Try next key.
+          currentKeyIndex = (currentKeyIndex + 1) % apiKeys.length;
+          attempts++;
+          continue;
+        }
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err?.error?.message || `HTTP ${res.status}`);
+      }
+
+      const data = await res.json();
+      return data?.candidates?.[0]?.content?.parts?.[0]?.text || 'No response from AI.';
+    } catch (err) {
+      if (err.message && err.message.includes('429')) {
+         currentKeyIndex = (currentKeyIndex + 1) % apiKeys.length;
+         attempts++;
+         continue;
+      }
+      throw err;
+    }
   }
-  const data = await res.json();
-  return data?.candidates?.[0]?.content?.parts?.[0]?.text || 'No response from AI.';
+
+  throw new Error('All API keys exhausted or rate limited. Please check your plan and billing details or try again later.');
 }
 
 export default function AIAssistant({ onMenuClick }) {
@@ -47,27 +73,59 @@ export default function AIAssistant({ onMenuClick }) {
   const fileInputRef = useRef(null);
   const recognitionRef = useRef(null);
 
-  const history = state.aiChatHistory || [];
+  const sessions = state.aiChatSessions || [];
+  const currentSessionId = state.currentAiChatSessionId;
+  const currentSession = sessions.find(s => s.id === currentSessionId) || { id: null, messages: [] };
+  const history = currentSession.messages;
 
   const filteredHistory = history.filter(msg => {
     if (!searchQuery.trim()) return true;
     return msg.content.toLowerCase().includes(searchQuery.toLowerCase());
   });
 
-  // Robust chat history persistence
+  // Migrate legacy chat history on mount
+  useEffect(() => {
+    if ((!state.aiChatSessions || state.aiChatSessions.length === 0) && state.aiChatHistory && state.aiChatHistory.length > 0) {
+      const legacySession = {
+        id: Date.now().toString(),
+        title: 'Legacy Chat',
+        messages: state.aiChatHistory,
+        timestamp: Date.now()
+      };
+      updateState({ aiChatSessions: [legacySession], aiChatHistory: [] });
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Force new chat on mount
+  useEffect(() => {
+    updateState({ currentAiChatSessionId: null });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Robust chat sessions persistence
   useEffect(() => {
     try {
-      if (history.length === 0) {
-        const localHistory = localStorage.getItem('aiChatHistory');
-        if (localHistory) {
-          updateState({ aiChatHistory: JSON.parse(localHistory) });
+      localStorage.setItem('aiChatSessions', JSON.stringify(sessions));
+    } catch { /* ignore error */ }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessions]);
+
+  // Load initial sessions
+  useEffect(() => {
+    try {
+      if (state.hasLoadedInitialData) { // optional check, but loading on mount is fine
+        const localSessions = localStorage.getItem('aiChatSessions');
+        if (localSessions) {
+          const parsed = JSON.parse(localSessions);
+          if (parsed.length > 0) {
+             updateState({ aiChatSessions: parsed });
+          }
         }
-      } else {
-        localStorage.setItem('aiChatHistory', JSON.stringify(history));
       }
     } catch { /* ignore error */ }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [history.length, updateState]);
+  }, []);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -127,7 +185,30 @@ export default function AIAssistant({ onMenuClick }) {
 
     const displayContent = img ? `📎 [Image: ${img.name}]\n${userMsg}` : userMsg;
     const newHistory = [...history, { role: 'user', content: displayContent }];
-    updateState({ aiChatHistory: newHistory });
+
+    let activeSessionId = currentSessionId;
+    let newSessions = [...sessions];
+
+    if (!activeSessionId) {
+      activeSessionId = Date.now().toString();
+      const newSession = {
+        id: activeSessionId,
+        title: userMsg.substring(0, 30) + (userMsg.length > 30 ? '...' : ''),
+        messages: newHistory,
+        timestamp: Date.now()
+      };
+      newSessions = [newSession, ...newSessions];
+    } else {
+      const sessionIndex = newSessions.findIndex(s => s.id === activeSessionId);
+      if (sessionIndex !== -1) {
+        newSessions[sessionIndex] = {
+          ...newSessions[sessionIndex],
+          messages: newHistory
+        };
+      }
+    }
+
+    updateState({ aiChatSessions: newSessions, currentAiChatSessionId: activeSessionId });
 
     try {
       const trials = state.trials || [];
@@ -162,30 +243,37 @@ You must optimize for fast answers and strictly incorporate product formulation 
       const fullPrompt = `${systemCtx}\n\nUser: ${userMsg}`;
       let reply;
       if (img) {
-        const st = getAppState();
-        const apiKeys = st?.settings?.apiKeys || [];
-        const key = (apiKeys[st?.settings?.currentApiKeyIndex || 0])?.key
-          || apiKeys[st?.settings?.currentApiKeyIndex || 0]
-          || apiKeys[0]?.key || apiKeys[0];
-        if (!key) throw new Error('No Gemini API key configured.');
-        const model = st?.settings?.selectedModel || 'gemini-2.0-flash';
-        const res = await fetch(
-          `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`,
-          { method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ contents: [{ parts: [
-              { text: `${systemCtx}\n\nUser: ${userMsg}` },
-              { inlineData: { mimeType: img.mimeType, data: img.base64 } }
-            ] }] }) }
-        );
-        if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error(e?.error?.message || `HTTP ${res.status}`); }
-        const data = await res.json();
-        reply = data?.candidates?.[0]?.content?.parts?.[0]?.text || 'No response from AI.';
+        const payload = {
+          contents: [{ parts: [
+            { text: `${systemCtx}\n\nUser: ${userMsg}` },
+            { inlineData: { mimeType: img.mimeType, data: img.base64 } }
+          ] }]
+        };
+        reply = await callGeminiWithRetries(payload, getAppState, true);
       } else {
-        reply = await callGemini(fullPrompt, getAppState);
+        const payload = {
+          contents: [{ parts: [{ text: fullPrompt }] }]
+        };
+        reply = await callGeminiWithRetries(payload, getAppState, false);
       }
-      updateState({ aiChatHistory: [...newHistory, { role: 'assistant', content: reply }] });
+
+      const sessionIndex = newSessions.findIndex(s => s.id === activeSessionId);
+      if (sessionIndex !== -1) {
+        newSessions[sessionIndex] = {
+          ...newSessions[sessionIndex],
+          messages: [...newHistory, { role: 'assistant', content: reply }]
+        };
+        updateState({ aiChatSessions: newSessions });
+      }
     } catch (err) {
-      updateState({ aiChatHistory: [...newHistory, { role: 'assistant', content: `⚠️ ${err.message}` }] });
+      const sessionIndex = newSessions.findIndex(s => s.id === activeSessionId);
+      if (sessionIndex !== -1) {
+        newSessions[sessionIndex] = {
+          ...newSessions[sessionIndex],
+          messages: [...newHistory, { role: 'assistant', content: `⚠️ ${err.message}` }]
+        };
+        updateState({ aiChatSessions: newSessions });
+      }
     } finally {
       setIsLoading(false);
       setTimeout(() => inputRef.current?.focus(), 100);
@@ -202,29 +290,94 @@ You must optimize for fast answers and strictly incorporate product formulation 
   };
 
   const handleClear = () => {
-    if (window.confirm('Clear all chat history?')) updateState({ aiChatHistory: [] });
+    if (window.confirm('Clear all chat sessions?')) {
+      updateState({ aiChatSessions: [], currentAiChatSessionId: null });
+      localStorage.removeItem('aiChatSessions');
+    }
   };
 
   const handleDeleteMessage = (idx) => {
     if (window.confirm('Delete this message?')) {
       const newHistory = [...history];
       newHistory.splice(idx, 1);
-      updateState({ aiChatHistory: newHistory });
+
+      const newSessions = [...sessions];
+      const sessionIndex = newSessions.findIndex(s => s.id === currentSessionId);
+      if (sessionIndex !== -1) {
+        newSessions[sessionIndex] = { ...newSessions[sessionIndex], messages: newHistory };
+        updateState({ aiChatSessions: newSessions });
+      }
     }
+  };
+
+  const handleNewChat = () => {
+    updateState({ currentAiChatSessionId: null });
   };
 
   const modelName = state.settings?.selectedModel || 'gemini-2.0-flash';
   const hasKey = (state.settings?.apiKeys || []).length > 0;
 
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+
   return (
     <div className="flex-1 flex flex-col h-full overflow-hidden bg-slate-50">
       <TopBar title="AI Assistant" onMenuClick={onMenuClick} />
 
-      <div className="flex-1 flex flex-col min-h-0 md:p-4 md:max-w-5xl md:mx-auto w-full">
-        <div className="flex-1 bg-white md:rounded-2xl md:shadow-sm md:border md:border-slate-200 flex flex-col min-h-0 overflow-hidden">
+      <div className="flex-1 flex min-h-0 w-full overflow-hidden">
+
+        {/* Sidebar (Desktop always visible, Mobile togglable) */}
+        <div className={`${isSidebarOpen ? 'translate-x-0' : '-translate-x-full'} md:translate-x-0 absolute md:relative z-20 w-64 h-full bg-slate-900 text-slate-300 flex flex-col transition-transform duration-300 ease-in-out`}>
+          <div className="p-4 border-b border-slate-800 flex items-center justify-between">
+            <button onClick={() => { handleNewChat(); setIsSidebarOpen(false); }} className="w-full flex items-center gap-2 bg-emerald-600 hover:bg-emerald-500 text-white px-3 py-2 rounded-lg transition-colors font-medium text-sm">
+              <PlusCircle className="w-4 h-4" />
+              New Chat
+            </button>
+            <button onClick={() => setIsSidebarOpen(false)} className="md:hidden ml-2 p-1 text-slate-400 hover:text-white">
+              <X className="w-5 h-5" />
+            </button>
+          </div>
+
+          <div className="flex-1 overflow-y-auto p-2 space-y-1 custom-scrollbar">
+            {sessions.map(session => (
+              <button
+                key={session.id}
+                onClick={() => { updateState({ currentAiChatSessionId: session.id }); setIsSidebarOpen(false); }}
+                className={`w-full flex items-center gap-2 text-left px-3 py-2.5 rounded-lg transition-colors text-sm ${currentSessionId === session.id ? 'bg-slate-800 text-white font-medium' : 'hover:bg-slate-800/50'}`}
+              >
+                <MessageSquare className="w-4 h-4 shrink-0 opacity-70" />
+                <span className="truncate flex-1">{session.title}</span>
+              </button>
+            ))}
+            {sessions.length === 0 && (
+              <div className="text-center p-4 text-xs text-slate-500">
+                No previous chats.
+              </div>
+            )}
+          </div>
+
+          {sessions.length > 0 && (
+            <div className="p-3 border-t border-slate-800">
+              <button onClick={handleClear} className="w-full flex items-center justify-center gap-2 text-xs text-slate-400 hover:text-red-400 transition-colors py-2 rounded hover:bg-slate-800/50">
+                <Trash2 className="w-3.5 h-3.5" />
+                Clear All Sessions
+              </button>
+            </div>
+          )}
+        </div>
+
+        {/* Mobile Sidebar Overlay */}
+        {isSidebarOpen && (
+          <div className="fixed inset-0 bg-black/50 z-10 md:hidden" onClick={() => setIsSidebarOpen(false)} />
+        )}
+
+        <div className="flex-1 flex flex-col min-h-0 md:p-4 max-w-5xl mx-auto w-full relative">
+          <div className="flex-1 bg-white md:rounded-2xl md:shadow-sm md:border md:border-slate-200 flex flex-col min-h-0 overflow-hidden">
 
           {/* Header */}
           <div className="p-4 border-b bg-slate-50 flex items-center gap-3">
+            <button onClick={() => setIsSidebarOpen(true)} className="md:hidden p-2 -ml-2 text-slate-500 hover:text-slate-800 rounded-lg">
+              <MessageSquare className="w-5 h-5" />
+            </button>
             <div className="w-10 h-10 bg-emerald-100 rounded-full flex items-center justify-center text-emerald-600 shrink-0">
               <Sparkles className="w-5 h-5" />
             </div>
@@ -380,6 +533,7 @@ You must optimize for fast answers and strictly incorporate product formulation 
                 <SendHorizontal className="w-5 h-5" />
               </button>
             </form>
+          </div>
           </div>
         </div>
       </div>

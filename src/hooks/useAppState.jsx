@@ -20,6 +20,8 @@ const initialState = {
   currentTrialIdForCamera: null,
   cameraMode: 'general',
   aiChatHistory: [],
+  aiChatSessions: [],
+  currentAiChatSessionId: null,
   aiAttachedImage: { fileData: null, mimeType: null },
   settings: {
     apiKeys: [],
