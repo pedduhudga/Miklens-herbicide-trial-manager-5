@@ -30,7 +30,6 @@ import MigrationTool from './pages/MigrationTool.jsx';
 import { useAuth } from './hooks/useAuth.js';
 import { useAppState } from './hooks/useAppState.jsx';
 import { getAllData } from './services/dataLayer.js';
-import { initAI } from './services/ai.js';
 
 import CompareTrials from './pages/CompareTrials.jsx';
 import Dashboard from './pages/Dashboard.jsx';
@@ -70,10 +69,6 @@ function AppLayout() {
     let cancelled = false;
     const loadAppData = async () => {
       window.dispatchEvent(new CustomEvent('app:loading', { detail: { show: true } }));
-
-      // Initialize AI Service
-      initAI(getAppState);
-
       try {
         const result = await getAllData({}, getAppState);
 
