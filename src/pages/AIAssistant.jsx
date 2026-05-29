@@ -4,6 +4,7 @@ import TopBar from '../components/TopBar.jsx';
 import { Sparkles, SendHorizontal, Trash2, Copy, Check, Paperclip, X, Mic, MicOff, Image, Search, PlusCircle, MessageSquare } from 'lucide-react';
 import { safeJsonParse } from '../utils/helpers.js';
 import { _callGeminiApiWithRetries } from '../services/ai.js';
+import { getAiChatSessions, saveAiChatSession, deleteAiChatSession } from '../services/dataLayer.js';
 
 const SUGGESTED_PROMPTS = [
   'Which formulation has the highest average efficacy across all trials?',
@@ -57,29 +58,66 @@ export default function AIAssistant({ onMenuClick }) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+
   // Robust chat sessions persistence
   useEffect(() => {
-    try {
-      localStorage.setItem('aiChatSessions', JSON.stringify(sessions));
-    } catch { /* ignore error */ }
+    let mounted = true;
+    const saveSessions = async () => {
+      try {
+        if (sessions && sessions.length > 0) {
+           // Fallback save to local storage immediately
+           localStorage.setItem('aiChatSessions', JSON.stringify(sessions));
+
+           // Async save to firebase
+           for (const session of sessions) {
+               if (!mounted) break;
+               await saveAiChatSession(session, getAppState);
+           }
+        }
+      } catch (err) {
+         console.warn('Background save to Firebase failed:', err);
+      }
+    };
+
+    // Only save when the sessions array changes and we are fully loaded
+    if (state.hasLoadedInitialData) {
+        saveSessions();
+    }
+
+    return () => { mounted = false; };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sessions]);
+  }, [sessions, state.hasLoadedInitialData]);
+
+
 
   // Load initial sessions
   useEffect(() => {
-    try {
-      if (state.hasLoadedInitialData) { // optional check, but loading on mount is fine
-        const localSessions = localStorage.getItem('aiChatSessions');
-        if (localSessions) {
-          const parsed = JSON.parse(localSessions);
-          if (parsed.length > 0) {
-             updateState({ aiChatSessions: parsed });
-          }
-        }
+    let mounted = true;
+    const fetchSessions = async () => {
+      try {
+         const remoteSessions = await getAiChatSessions({}, getAppState);
+         if (mounted && remoteSessions && remoteSessions.length > 0) {
+            updateState({ aiChatSessions: remoteSessions });
+         } else if (mounted) {
+            const localSessions = localStorage.getItem('aiChatSessions');
+            if (localSessions) {
+               const parsed = JSON.parse(localSessions);
+               if (parsed.length > 0) {
+                  updateState({ aiChatSessions: parsed });
+               }
+            }
+         }
+      } catch (err) {
+         console.error('Failed to load chat sessions:', err);
       }
-    } catch { /* ignore error */ }
+    };
+    if (state.hasLoadedInitialData) {
+       fetchSessions();
+    }
+    return () => { mounted = false; };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [state.hasLoadedInitialData]);
+
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -255,12 +293,23 @@ You must optimize for fast answers and strictly incorporate product formulation 
     });
   };
 
-  const handleClear = () => {
+
+  const handleClear = async () => {
     if (window.confirm('Clear all chat sessions?')) {
+      const sessionsToDelete = [...sessions];
       updateState({ aiChatSessions: [], currentAiChatSessionId: null });
       localStorage.removeItem('aiChatSessions');
+
+      try {
+          for (const session of sessionsToDelete) {
+             await deleteAiChatSession({ id: session.id }, getAppState);
+          }
+      } catch (e) {
+          console.warn('Failed to delete sessions from Firebase', e);
+      }
     }
   };
+
 
   const handleDeleteMessage = (idx) => {
     if (window.confirm('Delete this message?')) {

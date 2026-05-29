@@ -333,6 +333,30 @@ export async function fbGetAllData(userId, isAdmin = false) {
       fbGetOrganisations(ownerId),
       fbGetProjects(ownerId),
       fbGetBlocks(ownerId),
+      fbGetAiChatSessions(userId),
     ]);
-  return { trials, formulations, ingredients, organisations, projects, blocks };
+  return { trials, formulations, ingredients, organisations, projects, blocks, aiChatSessions };
+}
+
+// ─── AI Chat Sessions ────────────────────────────────────────────────────────
+export async function fbGetAiChatSessions(userId) {
+  return fbGetAll(COLLECTIONS.aiChatSessions, userId);
+}
+
+export async function fbSaveAiChatSession(data, userId) {
+  const db = getFirebaseDB();
+  const id = data.id || Date.now().toString();
+  const record = cleanForFirestore({
+    ...data,
+    ID: id,
+    id: id,
+    CreatedBy: userId,
+    _updatedAt: serverTimestamp(),
+  });
+  await setDoc(doc(db, COLLECTIONS.aiChatSessions, id), record, { merge: true });
+  return record;
+}
+
+export async function fbDeleteAiChatSession(id) {
+  return fbDelete(COLLECTIONS.aiChatSessions, id);
 }

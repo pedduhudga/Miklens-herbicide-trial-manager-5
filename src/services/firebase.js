@@ -66,5 +66,6 @@ export const COLLECTIONS = {
   settings: 'settings',
   analysisLog: 'analysisLog',
   syncConflicts: 'syncConflicts',
+  aiChatSessions: 'aiChatSessions',
   sprayLogs: 'sprayLogs',
 };
