@@ -3,7 +3,7 @@ import QRCodeLib from 'qrcode';
 import { useAppState } from '../hooks/useAppState.jsx';
 import TopBar from '../components/TopBar.jsx';
 import Modal from '../components/Modal.jsx';
-import { addTrial, deleteTrial, updateTrial, uploadPhoto } from '../services/dataLayer.js';
+import { addTrial, deleteTrial, updateTrial, uploadPhoto, apiCall } from '../services/dataLayer.js';
 import {
   Plus, Trash2, Edit, Copy, ChevronRight, Activity, MapPin, Calendar,
   CheckCircle, Camera, Grid, Info, Sparkles, Search, Filter, X,
@@ -1317,6 +1317,16 @@ export default function Trials({ onMenuClick }) {
     return `${appBase}#/live/${trial.ID}`;
   }, [state.settings?.scriptUrl, state.settings?.sheetId]);
 
+  const syncTrialToQrScript = useCallback(async (trialPatch) => {
+    const scriptUrl = String(state.settings?.scriptUrl || '').trim();
+    const sheetId = String(state.settings?.sheetId || '').trim();
+    if (!scriptUrl || !sheetId) return;
+    const result = await apiCall('updateTrialRecord', trialPatch, false, getAppState);
+    if (result?._errType) {
+      throw new Error(result.message || 'Google Apps Script sync failed');
+    }
+  }, [getAppState, state.settings?.scriptUrl, state.settings?.sheetId]);
+
   const generateQrCodeDataUrl = useCallback(async (dataString) => {
     try {
       return await QRCodeLib.toDataURL(dataString, {
@@ -1523,9 +1533,10 @@ export default function Trials({ onMenuClick }) {
     if (activeTrial?.ID === updated.ID) setActiveTrial(updated);
     try {
       await updateTrial({ ID: updated.ID, IsCompleted: true, IsLive: false, FinalizationDate: finDate, FinalControlDuration: finalDuration }, getAppState);
+      await syncTrialToQrScript({ ID: updated.ID, IsCompleted: true, IsLive: false, FinalizationDate: finDate, FinalControlDuration: finalDuration });
       window.dispatchEvent(new CustomEvent('app:toast', { detail: { msg: `Trial completed — ${finalDuration} control days recorded`, type: 'success' } }));
     } catch(e) {}
-  }, [trials, activeTrial, getAppState, updateState]);
+  }, [trials, activeTrial, getAppState, updateState, syncTrialToQrScript]);
 
   const handleQuickPhoto = useCallback((trial) => {
     setActiveTrial(trial);
@@ -1541,9 +1552,12 @@ export default function Trials({ onMenuClick }) {
     const updated = { ...trial, ...patch };
     updateState({ trials: trials.map(t => t.ID === updated.ID ? updated : t) });
     if (activeTrial?.ID === updated.ID) setActiveTrial(updated);
-    try { await updateTrial({ ID: updated.ID, ...patch }, getAppState); } catch(e) {}
+    try {
+      await updateTrial({ ID: updated.ID, ...patch }, getAppState);
+      await syncTrialToQrScript({ ID: updated.ID, ...patch });
+    } catch(e) {}
     if (!isCurrentlyLive) window.dispatchEvent(new CustomEvent('app:toast', { detail: { msg: 'Trial reactivated — control days reset', type: 'success' } }));
-  }, [trials, activeTrial, updateState, getAppState]);
+  }, [trials, activeTrial, updateState, getAppState, syncTrialToQrScript]);
 
   const handleEditControlDays = useCallback(async (trial) => {
     const current = trial.FinalControlDuration || String(Math.max(0, Math.round((new Date() - new Date(trial.Date || Date.now())) / 86400000)));
@@ -1617,9 +1631,7 @@ export default function Trials({ onMenuClick }) {
   // ── QR CODE GENERATOR ─────────────────────────────────────────────
   const buildQrText = useCallback((trial, mode) => {
     if (mode === 'online') {
-      // Deep-link into the React app's hash router live page
-      const base = window.location.origin + window.location.pathname;
-      return `${base}#/live/${trial.ID}`;
+      return buildPrintableTrialUrl(trial);
     }
     // Offline: compact human-readable text encoding (like HTML app)
     const fields = state.settings?.qrOfflineFields || ['FormulationName','Dosage','WeedSpecies','Date','Location'];
@@ -1635,7 +1647,7 @@ export default function Trials({ onMenuClick }) {
     if (fields.includes('Result') && trial.Result) lines.push(`Result:${trial.Result}`);
     if (trial.Replication) lines.push(`Rep:${trial.Replication}`);
     return lines.join('\n');
-  }, [state.settings]);
+  }, [buildPrintableTrialUrl, state.settings]);
 
   const generateQR = useCallback(async (trial, mode) => {
     if (!trial || !qrCanvasRef.current) return;
@@ -3003,7 +3015,7 @@ Exactly 2 sentences. Follow this structure:
 
               {/* QR Code Tab */}
               {detailTab === 'qr' && (() => {
-                const liveUrl = `${window.location.origin}${window.location.pathname}#/live/${detailTrial?.ID}`;
+                const liveUrl = buildPrintableTrialUrl(detailTrial);
                 const fmtDate = (d) => { try { return new Date(d).toLocaleDateString('en-GB',{day:'2-digit',month:'short',year:'numeric'}); } catch { return d||''; } };
                 return (
                 <div className="flex flex-col items-center gap-4 w-full">
@@ -3125,6 +3137,7 @@ Exactly 2 sentences. Follow this structure:
                       setActiveTrial(updatedTrial);
                       try {
                         await updateTrial({ ID: updatedTrial.ID, LiveQRSettings: updatedTrial.LiveQRSettings }, getAppState);
+                        await syncTrialToQrScript({ ID: updatedTrial.ID, LiveQRSettings: updatedTrial.LiveQRSettings });
                       } catch (e) {
                         window.dispatchEvent(new CustomEvent('app:toast', { detail: { msg: 'Could not save: ' + e.message, type: 'error' } }));
                       }
