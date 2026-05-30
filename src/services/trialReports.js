@@ -637,33 +637,52 @@ export async function generatePpt(trial) {
 //  EXPORT 4 — exportToCSV  (observations spreadsheet — same as legacy)
 // ═════════════════════════════════════════════════════════════════════════════
 export function exportToCSV(trial) {
-  const efficacy = validateEfficacy(safeJsonParse(trial.EfficacyDataJSON, []));
+  exportMultipleTrialsToCSV([trial]);
+}
+
+export function exportMultipleTrialsToCSV(trials) {
+  if (!trials || !trials.length) return;
+
   const header = ['Trial ID', 'Formulation', 'Investigator', 'Date', 'Location', 'Dosage',
                   'Weed Species', 'Result', 'DAA', 'Obs Date', 'Total Cover %',
                   'Species', 'Species Cover %', 'Status', 'Notes'];
   const rows = [];
-  if (efficacy.length) {
-    efficacy.forEach(obs => {
-      const details = obs.weedDetails?.length ? obs.weedDetails : [{ species: 'Total', cover: obs.weedCover ?? '' }];
-      details.forEach((wd, di) => {
-        rows.push([
-          di === 0 ? trial.ID : '', di === 0 ? trial.FormulationName : '',
-          di === 0 ? trial.InvestigatorName : '', di === 0 ? trial.Date : '',
-          di === 0 ? trial.Location : '', di === 0 ? trial.Dosage : '',
-          di === 0 ? trial.WeedSpecies : '', di === 0 ? trial.Result : '',
-          obs.daa ?? '', obs.date || '', obs.weedCover ?? '',
-          wd.species || 'Total', wd.cover ?? '', wd.status || '', obs.notes || ''
-        ]);
+
+  trials.forEach(trial => {
+    const efficacy = validateEfficacy(safeJsonParse(trial.EfficacyDataJSON, []));
+    if (efficacy.length) {
+      efficacy.forEach(obs => {
+        const details = obs.weedDetails?.length ? obs.weedDetails : [{ species: 'Total', cover: obs.weedCover ?? '' }];
+        details.forEach((wd, di) => {
+          rows.push([
+            di === 0 ? trial.ID : '', di === 0 ? trial.FormulationName : '',
+            di === 0 ? trial.InvestigatorName : '', di === 0 ? trial.Date : '',
+            di === 0 ? trial.Location : '', di === 0 ? trial.Dosage : '',
+            di === 0 ? trial.WeedSpecies : '', di === 0 ? trial.Result : '',
+            obs.daa ?? '', obs.date || '', obs.weedCover ?? '',
+            wd.species || 'Total', wd.cover ?? '', wd.status || '', obs.notes || ''
+          ]);
+        });
       });
-    });
-  } else {
-    rows.push([trial.ID, trial.FormulationName, trial.InvestigatorName, trial.Date,
-               trial.Location, trial.Dosage, trial.WeedSpecies, trial.Result,
-               '', '', '', '', '', '', '']);
-  }
+    } else {
+      rows.push([trial.ID, trial.FormulationName, trial.InvestigatorName, trial.Date,
+                 trial.Location, trial.Dosage, trial.WeedSpecies, trial.Result,
+                 '', '', '', '', '', '', '']);
+    }
+  });
+
   const csv = [header, ...rows].map(r => r.map(c => `"${String(c ?? '').replace(/"/g, '""')}"`).join(',')).join('\n');
-  dlBlob(new Blob([csv], { type: 'text/csv' }), `Trial_${safeName(trial.FormulationName)}_${trial.Date || 'nodate'}.csv`);
-  toast('CSV exported', 'success');
+
+  let filename = 'Trials_Export.csv';
+  if (trials.length === 1) {
+    const trial = trials[0];
+    filename = `Trial_${safeName(trial.FormulationName)}_${trial.Date || 'nodate'}.csv`;
+  } else {
+    filename = `Selected_Trials_${new Date().toISOString().split('T')[0]}.csv`;
+  }
+
+  dlBlob(new Blob([csv], { type: 'text/csv' }), filename);
+  toast(`CSV exported (${trials.length} trial${trials.length > 1 ? 's' : ''})`, 'success');
 }
 
 // ═════════════════════════════════════════════════════════════════════════════

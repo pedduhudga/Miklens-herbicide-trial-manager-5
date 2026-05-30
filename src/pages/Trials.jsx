@@ -27,6 +27,7 @@ import {
   generateScientificReport,
   generatePpt,
   exportToCSV,
+  exportMultipleTrialsToCSV,
   exportAllTrialsCSV,
   exportJson as exportJsonFile,
   exportFieldReportTxt,
@@ -2107,7 +2108,7 @@ Exactly 2 sentences. Follow this structure:
           <button onClick={navigateToCompare} className="flex items-center gap-1.5 text-sm hover:text-emerald-400 transition"><BarChart3 className="w-4 h-4" />Compare</button>
           <button onClick={() => setIsBulkEditOpen(true)} className="flex items-center gap-1.5 text-sm hover:text-amber-400 transition"><Edit className="w-4 h-4" />Bulk Edit</button>
           <button onClick={() => setIsBulkQrModalOpen(true)} className="flex items-center gap-1.5 text-sm hover:text-blue-400 transition"><Printer className="w-4 h-4" />Print Cards</button>
-          <button onClick={() => { const sel = trials.filter(t => selectedForBulk.has(t.ID)); sel.forEach(t => exportCsv(t)); }} className="flex items-center gap-1.5 text-sm hover:text-emerald-400 transition"><FileSpreadsheet className="w-4 h-4" />Export CSV</button>
+          <button onClick={() => { const sel = trials.filter(t => selectedForBulk.has(t.ID)); exportMultipleTrialsToCSV(sel); }} className="flex items-center gap-1.5 text-sm hover:text-emerald-400 transition"><FileSpreadsheet className="w-4 h-4" />Export CSV</button>
           <button onClick={handleBulkDelete} className="flex items-center gap-1.5 text-sm hover:text-red-400 transition"><Trash2 className="w-4 h-4" />Delete</button>
           <button onClick={clearBulk} className="ml-1 text-slate-400 hover:text-white"><X className="w-4 h-4" /></button>
         </div>
