@@ -504,7 +504,7 @@ IMPORTANT:
                     return extractResponseText(response);
                 };
 
-async function _callGeminiApiWithRetries(apiCallFunction, getAppState, retries = 0) {
+async function _callGeminiApiWithRetries_impl(apiCallFunction, getAppState, retries = 0) {
                 const keyCount = getAppState().settings.apiKeys.length || 1;
                 const maxRetries = keyCount * GEMINI_MODEL_PRIORITY.length + 3;
                 if (retries >= maxRetries) {
@@ -525,20 +525,20 @@ async function _callGeminiApiWithRetries(apiCallFunction, getAppState, retries =
                     if (isLongTermBlock) {
                         // Daily quota: rotate to a DIFFERENT project's key - it has independent quota for this model
                         if (hasUnblockedKeyForModel(currentModel) && rotateApiKey(true)) {
-                            return _callGeminiApiWithRetries(apiCallFunction, getAppState, retries + 1);
+                            return _callGeminiApiWithRetries_impl(apiCallFunction, getAppState, retries + 1);
                         }
                         // All keys exhausted for this model ? move to next model, restart from key 0
                         getAppState().settings.currentApiKeyIndex = 0;
                         if (rotateApiModel()) {
-                            return _callGeminiApiWithRetries(apiCallFunction, getAppState, retries + 1);
+                            return _callGeminiApiWithRetries_impl(apiCallFunction, getAppState, retries + 1);
                         }
                     } else {
                         // Short-term rate limit: try next model (fast), then rotate key
                         if (rotateApiModel()) {
-                            return _callGeminiApiWithRetries(apiCallFunction, getAppState, retries + 1);
+                            return _callGeminiApiWithRetries_impl(apiCallFunction, getAppState, retries + 1);
                         }
                         if (rotateApiKey()) {
-                            return _callGeminiApiWithRetries(apiCallFunction, getAppState, retries + 1);
+                            return _callGeminiApiWithRetries_impl(apiCallFunction, getAppState, retries + 1);
                         }
                     }
                     throw new Error('ALL_KEYS_EXHAUSTED');
@@ -560,7 +560,7 @@ async function _callGeminiApiWithRetries(apiCallFunction, getAppState, retries =
                         console.warn(`Invalid API key at index ${getAppState().settings.currentApiKeyIndex}. Attempting rotation.`);
                         if (rotateApiKey()) {
                             await new Promise(resolve => setTimeout(resolve, 300));
-                            return _callGeminiApiWithRetries(apiCallFunction, getAppState, retries + 1);
+                            return _callGeminiApiWithRetries_impl(apiCallFunction, getAppState, retries + 1);
                         }
                         throw new Error('INVALID_API_KEY: Your Gemini API key is not valid. Generate a new one at ai.google.dev');
                     }
@@ -599,14 +599,14 @@ async function _callGeminiApiWithRetries(apiCallFunction, getAppState, retries =
                             if (hasUnblockedKeyForModel(currentModel) && rotateApiKey(true)) {
                                 // Another project's key ? try the same model immediately
                                 await new Promise(resolve => setTimeout(resolve, 300));
-                                return _callGeminiApiWithRetries(apiCallFunction, getAppState, retries + 1);
+                                return _callGeminiApiWithRetries_impl(apiCallFunction, getAppState, retries + 1);
                             }
                             // All project keys exhausted for this model ? rotate model, restart from key 0
                             console.warn(`All ${keyCount} project keys exhausted for ${currentModel}. Rotating to next model.`);
                             getAppState().settings.currentApiKeyIndex = 0;
                             if (rotateApiModel()) {
                                 await new Promise(resolve => setTimeout(resolve, 300));
-                                return _callGeminiApiWithRetries(apiCallFunction, getAppState, retries + 1);
+                                return _callGeminiApiWithRetries_impl(apiCallFunction, getAppState, retries + 1);
                             }
                         } else {
                             // Per-minute / transient rate limit - block briefly, try next model first
@@ -615,11 +615,11 @@ async function _callGeminiApiWithRetries(apiCallFunction, getAppState, retries =
 
                             if (rotateApiModel()) {
                                 await new Promise(resolve => setTimeout(resolve, 500));
-                                return _callGeminiApiWithRetries(apiCallFunction, getAppState, retries + 1);
+                                return _callGeminiApiWithRetries_impl(apiCallFunction, getAppState, retries + 1);
                             }
                             if (rotateApiKey()) {
                                 await new Promise(resolve => setTimeout(resolve, 500));
-                                return _callGeminiApiWithRetries(apiCallFunction, getAppState, retries + 1);
+                                return _callGeminiApiWithRetries_impl(apiCallFunction, getAppState, retries + 1);
                             }
                         }
                         throw new Error(`QUOTA_EXCEEDED: All ${keyCount} keys and all models exhausted. Add keys from different Google projects or wait for daily quota reset.`);
@@ -639,13 +639,13 @@ async function _callGeminiApiWithRetries(apiCallFunction, getAppState, retries =
                             const retryDelay = 4000 + (retries * 4000);
                             console.warn(`Model overloaded (503). Retrying in ${retryDelay / 1000}s... (attempt ${retries + 1})`);
                             await new Promise(resolve => setTimeout(resolve, retryDelay));
-                            return _callGeminiApiWithRetries(apiCallFunction, getAppState, retries + 1);
+                            return _callGeminiApiWithRetries_impl(apiCallFunction, getAppState, retries + 1);
                         }
                         // After 2 quick retries, try a different model immediately
                         console.warn('Model still overloaded after 2 retries. Rotating model...');
                         if (rotateApiModel()) {
                             await new Promise(resolve => setTimeout(resolve, 500));
-                            return _callGeminiApiWithRetries(apiCallFunction, getAppState, retries + 1);
+                            return _callGeminiApiWithRetries_impl(apiCallFunction, getAppState, retries + 1);
                         }
                         throw new Error('ALL_KEYS_EXHAUSTED');
                     }
@@ -655,14 +655,14 @@ async function _callGeminiApiWithRetries(apiCallFunction, getAppState, retries =
                         console.warn(`Model "${getActiveApiModel()}" not found/unsupported. Rotating to a compatible model.`);
                         if (rotateApiModel()) {
                             await new Promise(resolve => setTimeout(resolve, 300));
-                            return _callGeminiApiWithRetries(apiCallFunction, getAppState, retries + 1);
+                            return _callGeminiApiWithRetries_impl(apiCallFunction, getAppState, retries + 1);
                         }
                         // As a last resort, force to gemini-2.5-flash (always available)
                         state.settings.apiModel = 'gemini-2.5-flash';
                         localStorage.setItem('appSettings', JSON.stringify(state.settings));
                         const modelSelect = document.getElementById('settings-api-model');
                         if (modelSelect) modelSelect.value = 'gemini-2.5-flash';
-                        return _callGeminiApiWithRetries(apiCallFunction, getAppState, retries + 1);
+                        return _callGeminiApiWithRetries_impl(apiCallFunction, getAppState, retries + 1);
                     }
 
                     // Handle 500 - Internal server error (temporary error, retry after delay)
@@ -671,7 +671,7 @@ async function _callGeminiApiWithRetries(apiCallFunction, getAppState, retries =
                             const retryDelay = 5000 + (retries * 3000);
                             console.warn(`Gemini internal error (500). Retrying in ${retryDelay / 1000}s... (attempt ${retries + 1}/3)`);
                             await new Promise(resolve => setTimeout(resolve, retryDelay));
-                            return _callGeminiApiWithRetries(apiCallFunction, getAppState, retries + 1);
+                            return _callGeminiApiWithRetries_impl(apiCallFunction, getAppState, retries + 1);
                         } else {
                             throw new Error('API_ERROR: Gemini server experiencing internal errors after 3 retries. Please try again later.');
                         }
@@ -739,7 +739,7 @@ async function _callGeminiApiWithRetries(apiCallFunction, getAppState, retries =
                         // Record this API call timestamp BEFORE the call
                         apiCallTimestamps.push(Date.now());
 
-                        const result = await _callGeminiApiWithRetries(task.apiCallFunction, getAppState);
+                        const result = await _callGeminiApiWithRetries_impl(task.apiCallFunction, getAppState);
                         task.resolve(result);
                     } catch (error) {
                         const errMsg = String(error?.message || 'Unknown AI error');
@@ -759,7 +759,7 @@ async function _callGeminiApiWithRetries(apiCallFunction, getAppState, retries =
                 getAppState().isAiQueueRunning = false;
             }
 
-        function callGeminiApi(description, apiCallFunction, getAppState) {
+        function callGeminiApi_impl(description, apiCallFunction, getAppState) {
                 return new Promise((resolve, reject) => {
                     getAppState().aiQueue.push({ description, apiCallFunction, resolve, reject });
                     processAiQueue();
@@ -21382,22 +21382,11 @@ Respond in structured JSON format:
 // The real implementations are bound to window for legacy compatibility
 
 export async function _callGeminiApiWithRetries(apiCallFunction, getAppState, retries = 0) {
-    // Delegate to the window-bound implementation if available
-    if (typeof window !== 'undefined' && window._callGeminiApiWithRetriesImpl) {
-        return window._callGeminiApiWithRetriesImpl(apiCallFunction, getAppState, retries);
-    }
-    console.warn("AI service not initialized. Call initAI(getAppState) first.");
-    return "AI service not initialized";
+    return _callGeminiApiWithRetries_impl(apiCallFunction, getAppState, retries);
 }
 
 export function callGeminiApi(description, apiCallFunction, getAppState) {
-    // Delegate to the window-bound implementation if available
-    if (typeof window !== 'undefined' && window.callGeminiApiImpl) {
-        return window.callGeminiApiImpl(description, apiCallFunction, getAppState);
-    }
-    console.warn("AI service not initialized. Call initAI(getAppState) first.");
-    // Return a promise that resolves with fallback
-    return Promise.resolve("AI analysis unavailable - service not initialized");
+    return callGeminiApi_impl(description, apiCallFunction, getAppState);
 }
 
 /**
