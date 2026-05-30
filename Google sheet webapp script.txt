@@ -583,14 +583,30 @@ function uploadPhotoToDrive(parentFolderId, payload) {
     if (!parentFolderId) throw new Error("Parent Folder ID missing.");
     const { fileData, fileName, mimeType, folderPath } = payload;
     
+    Logger.log(`=== UPLOAD PHOTO DEBUG ===`);
     Logger.log(`Targeting Root Folder ID: ${parentFolderId}`);
     Logger.log(`Hierarchy Path: ${JSON.stringify(folderPath)}`);
+    Logger.log(`File Name: ${fileName}`);
+    Logger.log(`MIME Type: ${mimeType}`);
 
     let targetFolder;
     try {
         targetFolder = DriveApp.getFolderById(parentFolderId);
+        Logger.log(`Successfully accessed folder: ${targetFolder.getName()}`);
     } catch (e) {
-        throw new Error('Drive access denied. Deploy Web App as "Execute as: Me", run triggerDrivePermissions() once in Apps Script editor, then redeploy a new version.');
+        Logger.log(`ERROR accessing folder ID: ${parentFolderId}`);
+        Logger.log(`Error details: ${e.message}`);
+        Logger.log(`Error stack: ${e.stack}`);
+        
+        // Try to get root folder to test if Drive API is working at all
+        try {
+            const rootFolder = DriveApp.getRootFolder();
+            Logger.log(`Drive API is working - can access root folder: ${rootFolder.getName()}`);
+        } catch (rootErr) {
+            Logger.log(`CRITICAL: Cannot even access root folder. Drive API permissions issue: ${rootErr.message}`);
+        }
+        
+        throw new Error(`Drive access denied for folder ID: ${parentFolderId}. Error: ${e.message}. Check that this folder exists and you have edit access to it.`);
     }
     
     // Create/retrieve nested subfolders if requested
@@ -2060,4 +2076,8 @@ function safeJsonParse(jsonString) {
     } catch (e) {
         return [];
     }
+}
+function testFolderAccess() {
+  const folder = DriveApp.getFolderById("14UTh_QWhCRoaQ0JvfKeg7LZvOGZRF_rT");
+  Logger.log(folder.getName());
 }
