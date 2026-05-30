@@ -205,8 +205,26 @@ export default function Trials({ onMenuClick }) {
     if (filterDateStart) list = list.filter(t => t.Date && t.Date >= filterDateStart);
     if (filterDateEnd)   list = list.filter(t => t.Date && t.Date <= filterDateEnd);
     list.sort((a, b) => {
-      if (sortBy === 'date-desc') return new Date(b.Date || 0) - new Date(a.Date || 0);
-      if (sortBy === 'date-asc') return new Date(a.Date || 0) - new Date(b.Date || 0);
+      if (sortBy === 'date-desc') {
+        const dateDiff = new Date(b.Date || 0) - new Date(a.Date || 0);
+        if (dateDiff !== 0) return dateDiff;
+
+        // Secondary sort for same date: newest DateUpdatedAt / CreatedAt on top
+        const aTime = new Date(a.DateUpdatedAt || a.CreatedAt || a._createdAt?.toDate?.() || 0).getTime();
+        const bTime = new Date(b.DateUpdatedAt || b.CreatedAt || b._createdAt?.toDate?.() || 0).getTime();
+        if (bTime !== aTime) return bTime - aTime;
+        return new Date(b.CreatedAt || 0) - new Date(a.CreatedAt || 0);
+      }
+      if (sortBy === 'date-asc') {
+        const dateDiff = new Date(a.Date || 0) - new Date(b.Date || 0);
+        if (dateDiff !== 0) return dateDiff;
+
+        // Secondary sort for same date: oldest DateUpdatedAt / CreatedAt on top
+        const aTime = new Date(a.DateUpdatedAt || a.CreatedAt || a._createdAt?.toDate?.() || 0).getTime();
+        const bTime = new Date(b.DateUpdatedAt || b.CreatedAt || b._createdAt?.toDate?.() || 0).getTime();
+        if (aTime !== bTime) return aTime - bTime;
+        return new Date(a.CreatedAt || 0) - new Date(b.CreatedAt || 0);
+      }
       if (sortBy === 'name') return (a.FormulationName || '').localeCompare(b.FormulationName || '');
       if (sortBy === 'obs') return (safeJsonParse(b.EfficacyDataJSON, []).length) - (safeJsonParse(a.EfficacyDataJSON, []).length);
       return 0;
@@ -287,10 +305,17 @@ export default function Trials({ onMenuClick }) {
     e.preventDefault();
     const formMatch = formulations.find(f => f.Name === formData.FormulationName);
     const isEdit = !!editingTrial;
+
+    let dateUpdatedAt = isEdit ? editingTrial.DateUpdatedAt : new Date().toISOString();
+    if (isEdit && editingTrial.Date !== formData.Date) {
+      dateUpdatedAt = new Date().toISOString();
+    }
+
     const payload = {
       ...(isEdit ? editingTrial : {}),
       ...formData,
       FormulationID: formMatch?.ID || (isEdit ? editingTrial.FormulationID : ''),
+      DateUpdatedAt: dateUpdatedAt,
       ...(isEdit ? {} : {
         ID: Date.now().toString(),
         EfficacyDataJSON: '[]', PhotoURLs: '[]', WeedPhotosJSON: '[]',
