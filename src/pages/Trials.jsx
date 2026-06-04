@@ -193,8 +193,9 @@ export default function Trials({ onMenuClick }) {
 
   // Sync local selectedForBulk to global selectedTrials
   useEffect(() => {
-    updateState({ selectedTrials: Array.from(selectedForBulk) });
-  }, [selectedForBulk, updateState]);
+    const matched = (state.trials || []).filter(t => selectedForBulk.has(t.ID));
+    updateState({ selectedTrials: matched });
+  }, [selectedForBulk, state.trials, updateState]);
 
   // ── DERIVED DATA ───────────────────────────────────────────────────
   const trials = state.trials || [];
