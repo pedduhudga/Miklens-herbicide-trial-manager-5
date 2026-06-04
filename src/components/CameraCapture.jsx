@@ -4,10 +4,13 @@ import { X, Zap } from 'lucide-react';
 export default function CameraCapture({ isOpen = true, onClose, onCapture, initialAspectRatio = '3:4', onAspectChange }) {
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
+  const previewParentRef = useRef(null);
+  
   const [stream, setStream] = useState(null);
   const [flashSupported, setFlashSupported] = useState(false);
   const [flashOn, setFlashOn] = useState(false);
   const [aspectRatio, setAspectRatio] = useState(initialAspectRatio || '3:4');
+  const [parentDims, setParentDims] = useState({ width: 0, height: 0 });
 
   useEffect(() => {
     let activeStream = null;
@@ -62,6 +65,26 @@ export default function CameraCapture({ isOpen = true, onClose, onCapture, initi
     };
   }, []);
 
+  // Monitor parent dimensions to dynamically size the aspect ratio box
+  useEffect(() => {
+    if (!previewParentRef.current) return;
+    
+    const updateDims = () => {
+      if (previewParentRef.current) {
+        setParentDims({
+          width: previewParentRef.current.clientWidth,
+          height: previewParentRef.current.clientHeight
+        });
+      }
+    };
+
+    updateDims();
+    const observer = new ResizeObserver(updateDims);
+    observer.observe(previewParentRef.current);
+    
+    return () => observer.disconnect();
+  }, []);
+
   const toggleFlash = async () => {
     if (!stream) return;
     const track = stream.getVideoTracks()[0];
@@ -107,7 +130,7 @@ export default function CameraCapture({ isOpen = true, onClose, onCapture, initi
       return;
     }
 
-    // Since the video is styled with object-cover, calculate the scaling factor
+    // Calculate scaling factor of the object-cover drawing
     const scale = Math.max(displayWidth / videoWidth, displayHeight / videoHeight);
 
     const drawWidth = videoWidth * scale;
@@ -116,7 +139,7 @@ export default function CameraCapture({ isOpen = true, onClose, onCapture, initi
     const xOffset = (drawWidth - displayWidth) / 2;
     const yOffset = (drawHeight - displayHeight) / 2;
 
-    // Translate the entire visible container viewport to natural video coordinates
+    // Translate the visible viewport to natural video coordinates
     const srcX = xOffset / scale;
     const srcY = yOffset / scale;
     const srcW = displayWidth / scale;
@@ -144,8 +167,36 @@ export default function CameraCapture({ isOpen = true, onClose, onCapture, initi
     onClose();
   };
 
+  // Compute exact dimensions for the letterboxed/centered video preview
+  const getPreviewDimensions = () => {
+    if (!parentDims.width || !parentDims.height) {
+      return { width: '100%', height: '100%' };
+    }
+
+    const targetRatio = aspectRatio === '1:1' ? 1.0 : aspectRatio === '3:4' ? 0.75 : 9 / 16;
+    const parentRatio = parentDims.width / parentDims.height;
+
+    let w, h;
+    if (parentRatio > targetRatio) {
+      // Parent is wider than the target ratio -> height is the limiting factor
+      h = parentDims.height;
+      w = h * targetRatio;
+    } else {
+      // Parent is taller than the target ratio -> width is the limiting factor
+      w = parentDims.width;
+      h = w / targetRatio;
+    }
+
+    return {
+      width: `${Math.round(w)}px`,
+      height: `${Math.round(h)}px`
+    };
+  };
+
+  const previewStyle = getPreviewDimensions();
+
   return (
-    <div className="fullscreen-overlay fixed inset-0 bg-black z-[10000] flex flex-col justify-center items-center overflow-hidden">
+    <div className="fullscreen-overlay fixed inset-0 bg-black z-[10000] flex flex-col justify-center items-center overflow-hidden animate-fade-in">
       <div className="camera-shell relative w-[min(98vw,760px)] h-[92%] max-h-[960px] rounded-3xl overflow-hidden bg-[#020617] border border-white/10 shadow-[0_24px_80px_rgba(0,0,0,0.45)] flex flex-col justify-between items-center p-4">
         
         {/* Top Controls Bar */}
@@ -155,7 +206,7 @@ export default function CameraCapture({ isOpen = true, onClose, onCapture, initi
               <button
                 key={ratio}
                 onClick={() => handleAspectChange(ratio)}
-                className={`px-3.5 py-1 text-xs font-semibold rounded-full transition-all ${
+                className={`px-3.5 py-1 text-xs font-semibold rounded-full transition-all duration-200 ${
                   aspectRatio === ratio
                     ? 'bg-emerald-500 text-white shadow-md'
                     : 'text-slate-300 hover:text-white'
@@ -175,16 +226,10 @@ export default function CameraCapture({ isOpen = true, onClose, onCapture, initi
         </div>
 
         {/* Video Preview Container with selected aspect ratio */}
-        <div className="flex-1 w-full flex justify-center items-center bg-black overflow-hidden relative rounded-2xl">
+        <div ref={previewParentRef} className="flex-1 w-full flex justify-center items-center bg-black overflow-hidden relative rounded-2xl">
           <div 
             className="relative overflow-hidden bg-[#0a0f1d] transition-all duration-300 shadow-2xl flex items-center justify-center" 
-            style={{
-              width: '100%',
-              height: '100%',
-              maxWidth: '100%',
-              maxHeight: '100%',
-              aspectRatio: aspectRatio === '1:1' ? '1/1' : aspectRatio === '3:4' ? '3/4' : '9/16',
-            }}
+            style={previewStyle}
           >
             <video ref={videoRef} className="w-full h-full object-cover" />
             <canvas ref={canvasRef} className="hidden" />
