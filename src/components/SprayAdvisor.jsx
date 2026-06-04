@@ -216,35 +216,26 @@ export default function SprayAdvisor({ lat, lon, locationName = 'Current Locatio
                   </p>
                 </div>
               </div>
-            /* Future hourly forecasts */
-{analysis.futureHours && analysis.futureHours.length > 0 && (
-  <div className="mt-4">
-    <h4 className="font-semibold text-slate-700 mb-2">Upcoming Hours</h4>
-    <div className="flex space-x-3 overflow-x-auto pb-2">
-      {analysis.futureHours.map((fh, i) => (
-                <div key={i} className="min-w-[80px] bg-slate-50 p-2 rounded-lg text-center">
-                  <div className="text-xs text-slate-500 mb-1">{fh.time.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</div>
-                  <div className="text-sm font-medium text-slate-800">{fh.temperature}°C</div>
-                  <div className="text-xs text-slate-600">{fh.humidity}%</div>
-                  <div className="text-xs text-slate-600">{fh.windSpeed} km/h</div>
-                  <div className="text-xs text-slate-600">{fh.precipitation}mm</div>
-                  {fh.precipitationProbability !== null && (
-                    <div className="text-xs text-slate-600">{fh.precipitationProbability}% prob</div>
-                  )}
+            )}
+            {analysis.futureHours && analysis.futureHours.length > 0 && (
+              <div className="mt-4">
+                <h4 className="font-semibold text-slate-700 mb-2">Upcoming Hours</h4>
+                <div className="flex space-x-3 overflow-x-auto pb-2">
+                  {analysis.futureHours.map((fh, i) => (
+                    <div key={i} className="min-w-[80px] bg-slate-50 p-2 rounded-lg text-center">
+                      <div className="text-xs text-slate-500 mb-1">{fh.time.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</div>
+                      <div className="text-sm font-medium text-slate-800">{fh.temperature}°C</div>
+                      <div className="text-xs text-slate-600">{fh.humidity}%</div>
+                      <div className="text-xs text-slate-600">{fh.windSpeed} km/h</div>
+                      <div className="text-xs text-slate-600">{fh.precipitation}mm</div>
+                      {fh.precipitationProbability !== null && (
+                        <div className="text-xs text-slate-600">{fh.precipitationProbability}% prob</div>
+                      )}
+                    </div>
+                  ))}
                 </div>
-              ))
-        <div key={i} className="min-w-[80px] bg-slate-50 p-2 rounded-lg text-center">
-          <div className="text-xs text-slate-500 mb-1">{fh.time.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</div>
-          <div className="text-sm font-medium text-slate-800">{fh.temperature}°C</div>
-          <div className="text-xs text-slate-600">{fh.humidity}%</div>
-          <div className="text-xs text-slate-600">{fh.windSpeed} km/h</div>
-          <div className="text-xs text-slate-600">{fh.precipitation}mm</div>
-        </div>
-      ))}
-    </div>
-  </div>
-)}
-)}
+              </div>
+            )}
 
             {/* Best Windows Tab */}
             {activeTab === 'best' && (
