@@ -287,10 +287,11 @@ export default function CompareTrials({ onMenuClick }) {
         return `${spName}: initial ${start}%, final ${end}%, WCE ${wce}%`;
       }).join('; ') || 'No species-specific breakdowns recorded';
 
-      // Duration of control
+      // Duration of control: use FinalControlDuration first. If empty, calculate from the max DAA in observations.
+      const maxObsDaa = eff.length > 0 ? Math.max(...eff.map(o => Number(o.daa ?? 0))) : 0;
       const duration = trial.FinalControlDuration 
         ? `${trial.FinalControlDuration} days (finalized)` 
-        : (trial.Date ? `${Math.max(0, Math.round((new Date() - new Date(trial.Date)) / 86400000))} days (active)` : 'Unknown');
+        : `${maxObsDaa} days (active)`;
 
       return {
         name: trial.FormulationName,
