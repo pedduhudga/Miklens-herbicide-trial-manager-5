@@ -58,11 +58,12 @@ const emptyForm = () => ({
   ApplicationTiming: '', WeedGrowthStage: '',
 });
 
-import { useLocation } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 
 export default function Trials({ onMenuClick }) {
   const { state, updateState, getAppState, dispatch } = useAppState();
   const location = useLocation();
+  const navigate = useNavigate();
 
   // --- List view state ---
   const [activeTab, setActiveTab] = useState('all');
@@ -1365,7 +1366,7 @@ export default function Trials({ onMenuClick }) {
   const clearBulk = () => setSelectedForBulk(new Set());
   const navigateToCompare = () => {
     updateState({ selectedTrials: trials.filter(t => selectedForBulk.has(t.ID)) });
-    window.location.hash = '/compare';
+    navigate('/compare');
     clearBulk();
   };
   const handleBulkDelete = async () => {
