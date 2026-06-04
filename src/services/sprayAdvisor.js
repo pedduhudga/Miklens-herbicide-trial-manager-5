@@ -9,7 +9,22 @@
  * @param {number} lon
  * @param {number} days - number of forecast days (1–16)
  */
+const weatherCache = new Map();
+
+// Clear cache (used on manual refresh)
+export function clearWeatherCache() {
+  weatherCache.clear();
+}
+
 async function fetchWeatherForecast(lat, lon, days = 3) {
+  const cacheKey = `${lat}|${lon}|${days}`;
+  const now = Date.now();
+  const cacheEntry = weatherCache.get(cacheKey);
+  // Use cached data if less than 10 minutes old
+  if (cacheEntry && now - cacheEntry.timestamp < 10 * 60 * 1000) {
+    return cacheEntry.data;
+  }
+
   const hourlyVars = 'temperature_2m,relative_humidity_2m,wind_speed_10m,precipitation,precipitation_probability';
   const dailyVars = 'temperature_2m_max,temperature_2m_min,precipitation_sum,wind_speed_10m_max,relative_humidity_2m_mean';
   const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&hourly=${hourlyVars}&daily=${dailyVars}&forecast_days=${days}&timezone=auto&wind_speed_unit=kmh`;
@@ -18,11 +33,15 @@ async function fetchWeatherForecast(lat, lon, days = 3) {
   if (!res.ok) throw new Error(`Weather API error: ${res.status}`);
   const data = await res.json();
 
-  return {
+  const result = {
     hourly: data.hourly,
     daily: data.daily,
     location: { lat, lon, timezone: data.timezone }
   };
+
+  // Store in cache
+  weatherCache.set(cacheKey, { data: result, timestamp: now });
+  return result;
 }
 
 // Optimal spray conditions
@@ -142,10 +161,10 @@ export async function analyzeSprayWindow(lat, lon, targetTime = null) {
     for (let i = 0; i < hourly.time.length; i++) {
       const hourTime = new Date(hourly.time[i]);
       const hour = hourTime.getHours();
-      
-      // Skip nighttime hours (typically not spraying hours)
-      if (hour < 6 || hour > 20) continue;
-      
+      const now = new Date();
+      // Skip past hours and nighttime hours (typically not spraying hours)
+      if (hourTime <= now || hour < 6 || hour > 20) continue;
+
       const conditions = {
         temperature: hourly.temperature_2m[i],
         humidity: hourly.relative_humidity_2m[i],
@@ -171,6 +190,22 @@ export async function analyzeSprayWindow(lat, lon, targetTime = null) {
       }
     }
     
+    // Capture upcoming hourly forecasts for UI (next 12 future hours)
+    const futureHours = [];
+    const nowMs = Date.now();
+    for (let i = 0; i < hourly.time.length && futureHours.length < 12; i++) {
+      const hourTime = new Date(hourly.time[i]);
+      if (hourTime <= nowMs) continue;
+      futureHours.push({
+        time: hourTime,
+        temperature: hourly.temperature_2m[i],
+        humidity: hourly.relative_humidity_2m[i],
+        windSpeed: hourly.wind_speed_10m[i],
+        precipitation: hourly.precipitation[i] || 0,
+        precipitationProbability: hourly.precipitation_probability ? hourly.precipitation_probability[i] : null
+      });
+    }
+
     // Sort by score descending
     windows.sort((a, b) => b.score - a.score);
     
@@ -186,7 +221,8 @@ export async function analyzeSprayWindow(lat, lon, targetTime = null) {
       allWindows: windows.slice(0, 20), // Top 20 windows
       groupedByDay,
       location: forecast.location,
-      recommendation: generateRecommendation(bestWindow, windows)
+      recommendation: generateRecommendation(bestWindow, windows),
+      futureHours // array of next 12 hourly forecasts for UI
     };
     
   } catch (error) {
