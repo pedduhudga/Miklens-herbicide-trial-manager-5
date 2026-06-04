@@ -221,19 +221,22 @@ export default function CompareTrials({ onMenuClick }) {
       `Formulation: ${trial.FormulationName}
 Active Ingredients: ${trial.activeIngredients}
 Dosage: ${trial.Dosage || 'N/A'}
-Cost/Ha: ${trial.costPerHa}
 Final WCE: ${finalWce !== null ? finalWce + '%' : 'No data'}
 Soil Profile: pH=${trial.pH}, Clay=${trial.clay}, Texture=${trial.texture}
 Weather: Temp=${trial.avgTemp}, Humid=${trial.avgHumid}, Rain=${trial.avgRain}`
     ).join('\n\n');
 
-    const prompt = `You are a professional senior agronomist and weed science specialist. Conduct a thorough end-to-end scientific comparison report of the following herbicide trials. Provide your analysis in 4 distinct sections:
+    const prompt = `You are a professional senior agronomist and weed science specialist. Conduct a thorough end-to-end scientific comparison report of the following herbicide trials. Provide your analysis in 3 distinct sections:
 1. Executive Summary: High-level overview of which formulation and treatment performed best and the primary takeaways.
 2. Timeline & Efficacy Analysis: Compare how weed control (WCE %) progressed over different Days After Application (DAA) points.
-3. Cost-Benefit & Chemistry Analysis: Evaluate the active ingredients, concentration levels, dosage efficiency, and financial cost-effectiveness ($ per hectare).
-4. Recommendations: Provide specific, actionable advice on formulation selection, dosage adjustments, and suitable environmental/soil conditions for future spraying.
+3. Chemistry & Environmental Analysis: Evaluate the active ingredients, concentration levels, dosage efficiency, and relation to soil profiles or weather conditions.
 
-Use professional, precise language. Here is the trial data:
+CRITICAL RULES & CONTRAINTS:
+- Do NOT mention or discuss financial costs, prices, cost-effectiveness, premium pricing, or any dollar ($) related figures anywhere in the report.
+- Do NOT include any recommendations, future suggestions, or advice on changes to make for future sprayings.
+- Do NOT describe the results as a "systemic failure", "widespread failure", "anomaly", "underdosage", or imply the trial had systemic issues or faults. Focus objectively and scientifically on the observed efficacy metrics, chemistry characteristics, and environmental parameters without negative diagnostics or critiques.
+
+Use professional, clean, agronomist language. Here is the trial data:
 ${contextData}`;
 
     try {
