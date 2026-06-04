@@ -511,4 +511,37 @@ export function getAIKey(providerId) {
   return localStorage.getItem(`AI_KEY_${providerId.toUpperCase()}`) || '';
 }
 
+export async function identifyWeedFromPhoto(imageDataUrl) {
+  const mimeType = imageDataUrl.split(';')[0].split(':')[1] || 'image/jpeg';
+  const base64 = imageDataUrl.split(',')[1];
+  
+  const geminiKeys = getAPIKeys('gemini-3-flash');
+  if (!geminiKeys.length) {
+    throw new Error('No Gemini API key available in Settings');
+  }
+  const apiKey = geminiKeys[0];
+  
+  const resp = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent?key=${apiKey}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ contents: [{ parts: [
+      { text: 'Identify weed species in this field photo. For each weed, provide: 1) Scientific name, 2) Common name, 3) Estimated cover% of that species in the frame, 4) Growth stage. Format as JSON array: [{"name":"...","commonName":"...","cover":0,"growthStage":"...","confidence":0.0}]. Confidence 0-1.' },
+      { inlineData: { mimeType, data: base64 } }
+    ]}] })
+  });
+  
+  if (!resp.ok) {
+    throw new Error(`Gemini API error: ${resp.status}`);
+  }
+  
+  const d = await resp.json();
+  const txt = d?.candidates?.[0]?.content?.parts?.[0]?.text || '';
+  const jsonMatch = txt.match(/\[.*\]/s);
+  if (jsonMatch) {
+    return JSON.parse(jsonMatch[0]);
+  } else {
+    return [{ name: 'Unknown', commonName: txt.slice(0, 120), cover: 0, growthStage: '', confidence: 0.5 }];
+  }
+}
+
 export { PROVIDERS, getAPIKeys };
