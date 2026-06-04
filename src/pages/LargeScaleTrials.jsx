@@ -53,8 +53,8 @@ export default function LargeScaleTrials({ onMenuClick }) {
 
   // Forms
   const [projectForm, setProjectForm] = useState({ Name: '', Crop: '', Location: '', Investigator: '', TargetWeeds: '', GPSBounds: '' });
-  const [sectorForm, setSectorForm] = useState({ Name: '', Code: '', FormulationID: '', Dosage: '' });
-  const [quadForm, setQuadForm] = useState({ Lat: '', Lon: '', Notes: '' });
+  const [sectorForm, setSectorForm] = useState({ Name: '', Code: '', FormulationID: '', Dosage: '', ApplicationTiming: '', Replication: '', PlotNumber: '' });
+  const [quadForm, setQuadForm] = useState({ Lat: '', Lon: '', Notes: '', Replication: '', PlotNumber: '', SoilPH: '', SoilClay: '', SoilSand: '', SoilOC: '', SoilTexture: '' });
   const [visitForm, setVisitForm] = useState({
     daa: '',
     date: new Date().toISOString().split('T')[0],
@@ -65,7 +65,12 @@ export default function LargeScaleTrials({ onMenuClick }) {
     cropPhytotoxicity: 0,
     weedObservations: [],
     photoBase64: '',
-    photoDirection: 'North'
+    photoDirection: 'North',
+    weedGrowthStage: '',
+    overallWeedGrowthStage: '',
+    yieldValue: '',
+    conclusion: '',
+    notes: ''
   });
 
   // Selected weed for the comparative WCE chart
@@ -277,7 +282,7 @@ export default function LargeScaleTrials({ onMenuClick }) {
       const res = await fbAddSector(activeProjectId, payload, state.auth?.uid);
       setSectors(prev => [...prev, res]);
       setIsSectorModalOpen(false);
-      setSectorForm({ Name: '', Code: '', FormulationID: '', Dosage: '' });
+      setSectorForm({ Name: '', Code: '', FormulationID: '', Dosage: '', ApplicationTiming: '', Replication: '', PlotNumber: '' });
       window.dispatchEvent(new CustomEvent('app:toast', { detail: { msg: 'Sector created!', type: 'success' } }));
     } catch {
       window.dispatchEvent(new CustomEvent('app:toast', { detail: { msg: 'Failed to create sector.', type: 'error' } }));
@@ -301,7 +306,7 @@ export default function LargeScaleTrials({ onMenuClick }) {
       const res = await fbAddQuadrant(activeProjectId, activeSectorId, payload, state.auth?.uid);
       setQuadrants(prev => [...prev, { ...res, sectorId: activeSectorId }]);
       setIsQuadModalOpen(false);
-      setQuadForm({ Lat: '', Lon: '', Notes: '' });
+      setQuadForm({ Lat: '', Lon: '', Notes: '', Replication: '', PlotNumber: '', SoilPH: '', SoilClay: '', SoilSand: '', SoilOC: '', SoilTexture: '' });
       window.dispatchEvent(new CustomEvent('app:toast', { detail: { msg: `Quadrant ${id} created!`, type: 'success' } }));
     } catch {
       window.dispatchEvent(new CustomEvent('app:toast', { detail: { msg: 'Failed to create quadrant.', type: 'error' } }));
@@ -420,7 +425,12 @@ export default function LargeScaleTrials({ onMenuClick }) {
       weatherRain: visitForm.weatherRain,
       cropPhytotoxicity: Number(visitForm.cropPhytotoxicity),
       weedObservations: visitForm.weedObservations,
-      photos
+      photos,
+      weedGrowthStage: visitForm.weedGrowthStage,
+      overallWeedGrowthStage: visitForm.overallWeedGrowthStage,
+      yieldValue: visitForm.yieldValue ? Number(visitForm.yieldValue) : '',
+      conclusion: visitForm.conclusion,
+      notes: visitForm.notes
     };
 
     try {
@@ -440,7 +450,12 @@ export default function LargeScaleTrials({ onMenuClick }) {
         cropPhytotoxicity: 0,
         weedObservations: [],
         photoBase64: '',
-        photoDirection: 'North'
+        photoDirection: 'North',
+        weedGrowthStage: '',
+        overallWeedGrowthStage: '',
+        yieldValue: '',
+        conclusion: '',
+        notes: ''
       });
       window.dispatchEvent(new CustomEvent('app:toast', { detail: { msg: 'Observation Visit saved!', type: 'success' } }));
     } catch (err) {
@@ -956,6 +971,42 @@ export default function LargeScaleTrials({ onMenuClick }) {
               />
             </div>
           </div>
+          <div className="grid grid-cols-3 gap-4">
+            <div>
+              <label className="block text-slate-600 font-bold mb-1">Application Timing</label>
+              <select
+                value={sectorForm.ApplicationTiming}
+                onChange={e => setSectorForm(p => ({ ...p, ApplicationTiming: e.target.value }))}
+                className="w-full px-3 py-2 border rounded-lg focus:outline-none"
+              >
+                <option value="">-- Timing --</option>
+                <option value="PRE">PRE</option>
+                <option value="E-POST">E-POST</option>
+                <option value="POST">POST</option>
+                <option value="L-POST">L-POST</option>
+              </select>
+            </div>
+            <div>
+              <label className="block text-slate-600 font-bold mb-1">Replication</label>
+              <input
+                type="text"
+                placeholder="e.g. R1"
+                value={sectorForm.Replication}
+                onChange={e => setSectorForm(p => ({ ...p, Replication: e.target.value }))}
+                className="w-full px-3 py-2 border rounded-lg focus:outline-none"
+              />
+            </div>
+            <div>
+              <label className="block text-slate-600 font-bold mb-1">Plot Number</label>
+              <input
+                type="text"
+                placeholder="e.g. 101"
+                value={sectorForm.PlotNumber}
+                onChange={e => setSectorForm(p => ({ ...p, PlotNumber: e.target.value }))}
+                className="w-full px-3 py-2 border rounded-lg focus:outline-none"
+              />
+            </div>
+          </div>
           <button
             type="submit"
             className="w-full py-2 bg-emerald-700 text-white font-bold rounded-lg hover:bg-emerald-800 transition"
@@ -1008,6 +1059,88 @@ export default function LargeScaleTrials({ onMenuClick }) {
               />
             </div>
           </div>
+
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="block text-slate-600 font-bold mb-1">Replication</label>
+              <input
+                type="text"
+                placeholder="e.g. R1"
+                value={quadForm.Replication}
+                onChange={e => setQuadForm(p => ({ ...p, Replication: e.target.value }))}
+                className="w-full px-3 py-2 border rounded-lg focus:outline-none"
+              />
+            </div>
+            <div>
+              <label className="block text-slate-600 font-bold mb-1">Plot Number</label>
+              <input
+                type="text"
+                placeholder="e.g. 101"
+                value={quadForm.PlotNumber}
+                onChange={e => setQuadForm(p => ({ ...p, PlotNumber: e.target.value }))}
+                className="w-full px-3 py-2 border rounded-lg focus:outline-none"
+              />
+            </div>
+          </div>
+
+          <div className="bg-slate-50 p-3 rounded-lg border border-slate-200 space-y-2">
+            <span className="font-bold text-slate-700 text-[10px] uppercase">Soil Characteristics</span>
+            <div className="grid grid-cols-3 gap-2">
+              <div>
+                <label className="text-[9px] text-slate-500">Soil pH</label>
+                <input
+                  type="text"
+                  placeholder="e.g. 6.5"
+                  value={quadForm.SoilPH}
+                  onChange={e => setQuadForm(p => ({ ...p, SoilPH: e.target.value }))}
+                  className="w-full px-2 py-1 bg-white border rounded"
+                />
+              </div>
+              <div>
+                <label className="text-[9px] text-slate-500">Clay (%)</label>
+                <input
+                  type="text"
+                  placeholder="e.g. 35"
+                  value={quadForm.SoilClay}
+                  onChange={e => setQuadForm(p => ({ ...p, SoilClay: e.target.value }))}
+                  className="w-full px-2 py-1 bg-white border rounded"
+                />
+              </div>
+              <div>
+                <label className="text-[9px] text-slate-500">Sand (%)</label>
+                <input
+                  type="text"
+                  placeholder="e.g. 40"
+                  value={quadForm.SoilSand}
+                  onChange={e => setQuadForm(p => ({ ...p, SoilSand: e.target.value }))}
+                  className="w-full px-2 py-1 bg-white border rounded"
+                />
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-2 pt-1">
+              <div>
+                <label className="text-[9px] text-slate-500">Organic Carbon (%)</label>
+                <input
+                  type="text"
+                  placeholder="e.g. 1.2"
+                  value={quadForm.SoilOC}
+                  onChange={e => setQuadForm(p => ({ ...p, SoilOC: e.target.value }))}
+                  className="w-full px-2 py-1 bg-white border rounded"
+                />
+              </div>
+              <div>
+                <label className="text-[9px] text-slate-500">Soil Texture</label>
+                <input
+                  type="text"
+                  placeholder="e.g. Clay loam"
+                  value={quadForm.SoilTexture}
+                  onChange={e => setQuadForm(p => ({ ...p, SoilTexture: e.target.value }))}
+                  className="w-full px-2 py-1 bg-white border rounded"
+                />
+              </div>
+            </div>
+          </div>
+
           <div>
             <label className="block text-slate-600 font-bold mb-1">Quadrant Field Notes</label>
             <textarea
@@ -1130,6 +1263,65 @@ export default function LargeScaleTrials({ onMenuClick }) {
                 <option value="West">West</option>
                 <option value="Nadir">Nadir (Straight Down)</option>
               </select>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-3 gap-4">
+            <div>
+              <label className="block text-slate-600 font-bold mb-1">Weed Growth Stage</label>
+              <select
+                value={visitForm.weedGrowthStage}
+                onChange={e => setVisitForm(p => ({ ...p, weedGrowthStage: e.target.value }))}
+                className="w-full px-3 py-2 border rounded-lg focus:outline-none"
+              >
+                <option value="">-- Choose Stage --</option>
+                <option value="Seedling">Seedling</option>
+                <option value="Vegetative">Vegetative</option>
+                <option value="Flowering">Flowering</option>
+                <option value="Mature">Mature</option>
+              </select>
+            </div>
+            <div>
+              <label className="block text-slate-600 font-bold mb-1">Overall Growth Stage</label>
+              <input
+                type="text"
+                placeholder="e.g. 2-4 leaf stage"
+                value={visitForm.overallWeedGrowthStage}
+                onChange={e => setVisitForm(p => ({ ...p, overallWeedGrowthStage: e.target.value }))}
+                className="w-full px-3 py-2 border rounded-lg focus:outline-none"
+              />
+            </div>
+            <div>
+              <label className="block text-slate-600 font-bold mb-1">Yield Value</label>
+              <input
+                type="number"
+                step="0.01"
+                placeholder="e.g. 3.4"
+                value={visitForm.yieldValue}
+                onChange={e => setVisitForm(p => ({ ...p, yieldValue: e.target.value }))}
+                className="w-full px-3 py-2 border rounded-lg focus:outline-none"
+              />
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="block text-slate-600 font-bold mb-1">Notes</label>
+              <textarea
+                placeholder="Observation notes..."
+                value={visitForm.notes}
+                onChange={e => setVisitForm(p => ({ ...p, notes: e.target.value }))}
+                className="w-full px-3 py-2 border rounded-lg focus:outline-none h-16 text-xs"
+              />
+            </div>
+            <div>
+              <label className="block text-slate-600 font-bold mb-1">Conclusion</label>
+              <textarea
+                placeholder="Final conclusion..."
+                value={visitForm.conclusion}
+                onChange={e => setVisitForm(p => ({ ...p, conclusion: e.target.value }))}
+                className="w-full px-3 py-2 border rounded-lg focus:outline-none h-16 text-xs"
+              />
             </div>
           </div>
 
