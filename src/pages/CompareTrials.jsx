@@ -240,7 +240,7 @@ ${contextData}`;
       const apiKeys = getAppState()?.settings?.apiKeys || [];
       const key = apiKeys[0]?.key || apiKeys[0];
       if (!key) { setAiSummary('No Gemini API key configured. Add one in Settings → AI Keys.'); return; }
-      const modelName = getAppState()?.settings?.selectedModel || 'gemini-2.0-flash';
+      const modelName = getAppState()?.settings?.selectedModel || 'gemini-3.5-flash';
       const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${key}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
