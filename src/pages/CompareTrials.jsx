@@ -1,9 +1,10 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { useAppState } from '../hooks/useAppState.jsx';
 import TopBar from '../components/TopBar.jsx';
 import { safeJsonParse } from '../utils/helpers.js';
 import { useNavigate } from 'react-router-dom';
-import { Sparkles, Loader2, Activity, ArrowLeft, CheckCircle, X, Thermometer, Droplets, Wind, CloudRain } from 'lucide-react';
+import { Sparkles, Loader2, Activity, ArrowLeft, CheckCircle, X, Download, FileText, Table, LineChart, Cpu, DollarSign, Cloud, Compass } from 'lucide-react';
+import { exportComparisonCsv, exportComparisonHtml, exportComparisonPdf } from '../services/compareReports.js';
 
 const RESULT_BADGE = {
   Excellent: 'bg-emerald-100 text-emerald-700',
@@ -12,26 +13,83 @@ const RESULT_BADGE = {
   Poor: 'bg-red-100 text-red-700',
 };
 
-const COLORS = ['#10b981','#3b82f6','#f59e0b','#ef4444','#8b5cf6','#06b6d4','#f97316'];
+const COLORS = ['#10b981', '#3b82f6', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4', '#f97316'];
 
 export default function CompareTrials({ onMenuClick }) {
   const { state, updateState, getAppState } = useAppState();
   const navigate = useNavigate();
   const [aiSummary, setAiSummary] = useState(null);
   const [isGenerating, setIsGenerating] = useState(false);
+  const canvasRef = useRef(null);
 
   const selectedTrials = state.selectedTrials || [];
+  const formulations = state.formulations || [];
+  const ingredientsList = state.ingredients || [];
 
   const removeFromComparison = (id) => {
     updateState({ selectedTrials: selectedTrials.filter(t => t.ID !== id) });
   };
 
-  // Build per-trial efficacy series
+  // Build per-trial efficacy series and calculate parameters
   const trialSeries = useMemo(() => selectedTrials.map(t => {
     const eff = safeJsonParse(t.EfficacyDataJSON, []).sort((a, b) => (a.daa ?? 0) - (b.daa ?? 0));
     const baselineCover = eff.length > 0 ? (Number(eff[0].weedCover) || 0) : null;
+    
+    // Find Formulation details
+    const form = formulations.find(f => f.ID === t.FormulationID) || {};
+    
+    // Find ingredients
+    const activeIngs = [];
+    if (form.IngredientsJSON) {
+      const ingMap = safeJsonParse(form.IngredientsJSON, {});
+      Object.entries(ingMap).forEach(([ingId, conc]) => {
+        const found = ingredientsList.find(ing => ing.ID === ingId);
+        if (found) {
+          activeIngs.push(`${found.Name} (${conc}%)`);
+        }
+      });
+    }
+
+    // Cost calculations
+    let costPerHa = '—';
+    if (form.EstimatedCost && t.Dosage) {
+      const costNum = Number(form.EstimatedCost);
+      const doseNum = parseFloat(t.Dosage);
+      if (!isNaN(costNum) && !isNaN(doseNum)) {
+        costPerHa = `$${((costNum / 1000) * doseNum).toFixed(2)}`;
+      }
+    }
+
+    // Average Weather
+    const weatherData = safeJsonParse(t.WeatherJSON, null);
+    const avgTemp = weatherData?.temp ?? t.Temperature ?? '—';
+    const avgHumid = weatherData?.humidity ?? t.Humidity ?? '—';
+    const avgWind = weatherData?.windspeed ?? t.Windspeed ?? '—';
+    const avgRain = weatherData?.rain ?? t.Rain ?? '—';
+
+    // Soil Data
+    const soil = safeJsonParse(t.SoilDataJSON, null) || {};
+    const pH = t.SoilPH || soil.ph || '—';
+    const clay = t.SoilClay || soil.clay || '—';
+    const sand = t.SoilSand || soil.sand || '—';
+    const oc = t.SoilOC || soil.organicCarbon || '—';
+    const texture = t.SoilTexture || soil.texture || '—';
+
     return {
-      trial: t,
+      trial: {
+        ...t,
+        activeIngredients: activeIngs.length > 0 ? activeIngs.join(', ') : '—',
+        costPerHa,
+        avgTemp: avgTemp !== '—' ? `${avgTemp}°C` : '—',
+        avgHumid: avgHumid !== '—' ? `${avgHumid}%` : '—',
+        avgWind: avgWind !== '—' ? `${avgWind} km/h` : '—',
+        avgRain: avgRain !== '—' ? `${avgRain} mm` : '—',
+        pH,
+        clay: clay !== '—' ? `${clay}%` : '—',
+        sand: sand !== '—' ? `${sand}%` : '—',
+        oc: oc !== '—' ? `${oc}%` : '—',
+        texture
+      },
       eff,
       baselineCover,
       finalWce: eff.length > 0
@@ -42,7 +100,7 @@ export default function CompareTrials({ onMenuClick }) {
             : null)
         : null,
     };
-  }), [selectedTrials]);
+  }), [selectedTrials, formulations, ingredientsList]);
 
   // Collect all unique DAA points across all trials
   const allDaa = useMemo(() => {
@@ -51,14 +109,133 @@ export default function CompareTrials({ onMenuClick }) {
     return [...set].sort((a, b) => a - b);
   }, [trialSeries]);
 
+  // Redraw Canvas Multi-line Chart
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas || allDaa.length === 0) return;
+    const ctx = canvas.getContext('2d');
+    const W = canvas.width;
+    const H = canvas.height;
+    const PAD = { top: 30, right: 30, bottom: 40, left: 50 };
+
+    ctx.clearRect(0, 0, W, H);
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, W, H);
+
+    const minDaa = Math.min(...allDaa);
+    const maxDaa = Math.max(...allDaa);
+    const daaRange = maxDaa - minDaa || 1;
+
+    const xScale = d => PAD.left + ((d - minDaa) / daaRange) * (W - PAD.left - PAD.right);
+    const yScale = pct => PAD.top + (1 - pct / 100) * (H - PAD.top - PAD.bottom);
+
+    // Draw Grid Lines
+    ctx.strokeStyle = '#f1f5f9';
+    ctx.lineWidth = 1;
+    [0, 20, 40, 60, 80, 100].forEach(y => {
+      const py = yScale(y);
+      ctx.beginPath();
+      ctx.moveTo(PAD.left, py);
+      ctx.lineTo(W - PAD.right, py);
+      ctx.stroke();
+
+      ctx.fillStyle = '#64748b';
+      ctx.font = '10px sans-serif';
+      ctx.textAlign = 'right';
+      ctx.fillText(`${y}%`, PAD.left - 8, py + 3);
+    });
+
+    // Draw DAA vertical grid lines
+    allDaa.forEach(d => {
+      const px = xScale(d);
+      ctx.beginPath();
+      ctx.moveTo(px, PAD.top);
+      ctx.lineTo(px, H - PAD.bottom);
+      ctx.stroke();
+
+      ctx.fillStyle = '#64748b';
+      ctx.font = '10px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText(`DAA ${d}`, px, H - PAD.bottom + 14);
+    });
+
+    // Axis Lines
+    ctx.strokeStyle = '#cbd5e1';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(PAD.left, PAD.top);
+    ctx.lineTo(PAD.left, H - PAD.bottom);
+    ctx.lineTo(W - PAD.right, H - PAD.bottom);
+    ctx.stroke();
+
+    // Draw Lines for Each Trial Series
+    trialSeries.forEach((series, i) => {
+      if (series.eff.length === 0) return;
+      const color = COLORS[i % COLORS.length];
+      
+      // We will plot either controlPct if defined, or computed WCE based on baseline
+      const getPoints = () => {
+        return series.eff.map(pt => {
+          const val = pt.controlPct !== undefined
+            ? Number(pt.controlPct)
+            : (series.baselineCover > 0
+              ? Math.round(((series.baselineCover - Number(pt.weedCover)) / series.baselineCover) * 100)
+              : 0);
+          return { daa: Number(pt.daa ?? 0), val };
+        });
+      };
+
+      const pts = getPoints();
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      pts.forEach((pt, idx) => {
+        const px = xScale(pt.daa);
+        const py = yScale(pt.val);
+        if (idx === 0) ctx.moveTo(px, py);
+        else ctx.lineTo(px, py);
+      });
+      ctx.stroke();
+
+      // Draw point markers
+      pts.forEach(pt => {
+        const px = xScale(pt.daa);
+        const py = yScale(pt.val);
+        ctx.beginPath();
+        ctx.arc(px, py, 4, 0, 2 * Math.PI);
+        ctx.fillStyle = '#ffffff';
+        ctx.fill();
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 2.5;
+        ctx.stroke();
+      });
+    });
+  }, [trialSeries, allDaa]);
+
   const handleGenerateSummary = async () => {
     if (selectedTrials.length < 2) return;
     setIsGenerating(true);
     setAiSummary(null);
+
     const contextData = trialSeries.map(({ trial, finalWce }) =>
-      `Formulation: ${trial.FormulationName}, Target: ${trial.WeedSpecies || 'N/A'}, Dosage: ${trial.Dosage || 'N/A'}, Final WCE: ${finalWce !== null ? finalWce + '%' : 'No data'}`
-    ).join('\n');
-    const prompt = `Compare these herbicide trials and give a concise 3-bullet executive summary of which formulation performed best and why:\n\n${contextData}`;
+      `Formulation: ${trial.FormulationName}
+Active Ingredients: ${trial.activeIngredients}
+Dosage: ${trial.Dosage || 'N/A'}
+Cost/Ha: ${trial.costPerHa}
+Final WCE: ${finalWce !== null ? finalWce + '%' : 'No data'}
+Soil Profile: pH=${trial.pH}, Clay=${trial.clay}, Texture=${trial.texture}
+Weather: Temp=${trial.avgTemp}, Humid=${trial.avgHumid}, Rain=${trial.avgRain}`
+    ).join('\n\n');
+
+    const prompt = `You are a professional senior agronomist and weed science specialist. Conduct a thorough end-to-end scientific comparison report of the following herbicide trials. Provide your analysis in 4 distinct sections:
+1. Executive Summary: High-level overview of which formulation and treatment performed best and the primary takeaways.
+2. Timeline & Efficacy Analysis: Compare how weed control (WCE %) progressed over different Days After Application (DAA) points.
+3. Cost-Benefit & Chemistry Analysis: Evaluate the active ingredients, concentration levels, dosage efficiency, and financial cost-effectiveness ($ per hectare).
+4. Recommendations: Provide specific, actionable advice on formulation selection, dosage adjustments, and suitable environmental/soil conditions for future spraying.
+
+Use professional, precise language. Here is the trial data:
+${contextData}`;
+
     try {
       const apiKeys = getAppState()?.settings?.apiKeys || [];
       const key = apiKeys[0]?.key || apiKeys[0];
@@ -78,6 +255,10 @@ export default function CompareTrials({ onMenuClick }) {
       setIsGenerating(false);
     }
   };
+
+  const handleExportCsv = () => exportComparisonCsv(trialSeries, allDaa);
+  const handleExportHtml = () => exportComparisonHtml(trialSeries, allDaa, aiSummary);
+  const handleExportPdf = () => exportComparisonPdf(trialSeries, allDaa, aiSummary);
 
   if (selectedTrials.length === 0) {
     return (
@@ -101,19 +282,51 @@ export default function CompareTrials({ onMenuClick }) {
 
       <div className="flex-1 overflow-y-auto p-4 max-w-7xl mx-auto w-full space-y-5">
 
-        {/* Trial chips */}
-        <div className="flex flex-wrap gap-2 items-center">
-          <span className="text-sm font-semibold text-slate-500">Comparing:</span>
-          {selectedTrials.map((t, i) => (
-            <span key={t.ID} className="flex items-center gap-1.5 px-3 py-1 rounded-full text-sm font-semibold text-white" style={{ backgroundColor: COLORS[i % COLORS.length] }}>
-              {t.FormulationName}
-              <button onClick={() => removeFromComparison(t.ID)} className="opacity-70 hover:opacity-100"><X className="w-3.5 h-3.5" /></button>
-            </span>
-          ))}
-          <button onClick={() => navigate('/trials')} className="ml-auto text-xs text-emerald-600 font-semibold hover:underline flex items-center gap-1">
-            <ArrowLeft className="w-3.5 h-3.5" />Add / Change Trials
-          </button>
+        {/* Header Action Bar */}
+        <div className="flex flex-col sm:flex-row gap-3 items-start sm:items-center justify-between bg-white p-4 rounded-xl border border-slate-100 shadow-sm">
+          <div className="flex flex-wrap gap-2 items-center">
+            <span className="text-sm font-semibold text-slate-500">Comparing:</span>
+            {selectedTrials.map((t, i) => (
+              <span key={t.ID} className="flex items-center gap-1.5 px-3 py-1 rounded-full text-sm font-semibold text-white" style={{ backgroundColor: COLORS[i % COLORS.length] }}>
+                {t.FormulationName}
+                <button onClick={() => removeFromComparison(t.ID)} className="opacity-70 hover:opacity-100"><X className="w-3.5 h-3.5" /></button>
+              </span>
+            ))}
+          </div>
+
+          <div className="flex flex-wrap gap-2 w-full sm:w-auto">
+            <button onClick={handleExportCsv} className="flex items-center gap-1.5 px-3 py-1.5 border border-slate-200 hover:bg-slate-50 rounded-lg text-xs font-semibold text-slate-600 transition">
+              <Download className="w-3.5 h-3.5" /> CSV
+            </button>
+            <button onClick={handleExportHtml} className="flex items-center gap-1.5 px-3 py-1.5 border border-slate-200 hover:bg-slate-50 rounded-lg text-xs font-semibold text-slate-600 transition">
+              <FileText className="w-3.5 h-3.5" /> HTML
+            </button>
+            <button onClick={handleExportPdf} className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 text-white hover:bg-emerald-700 rounded-lg text-xs font-semibold transition">
+              <Download className="w-3.5 h-3.5" /> PDF Report
+            </button>
+          </div>
         </div>
+
+        {/* Efficacy Timeline Line Chart */}
+        {allDaa.length > 0 && (
+          <div className="bg-white rounded-xl shadow-sm border border-slate-100 p-5">
+            <h3 className="font-bold text-slate-800 mb-4 flex items-center gap-2">
+              <LineChart className="w-4 h-4 text-emerald-600" />
+              Efficacy Timeline (WCE % vs Days After Application)
+            </h3>
+            <div className="relative overflow-hidden w-full h-64 border rounded-lg bg-slate-50/50">
+              <canvas ref={canvasRef} width={800} height={256} className="w-full h-full" />
+            </div>
+            <div className="flex flex-wrap gap-4 mt-3 justify-center text-xs">
+              {trialSeries.map((s, idx) => (
+                <div key={s.trial.ID} className="flex items-center gap-1.5">
+                  <span className="w-3 h-3 rounded-full" style={{ backgroundColor: COLORS[idx % COLORS.length] }} />
+                  <span className="font-semibold text-slate-600">{s.trial.FormulationName}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
 
         {/* Summary cards */}
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -150,43 +363,21 @@ export default function CompareTrials({ onMenuClick }) {
           })}
         </div>
 
-        {/* WCE Bar Chart */}
-        {trialSeries.some(s => s.finalWce !== null) && (
-          <div className="bg-white rounded-xl shadow-sm border border-slate-100 p-5">
-            <h3 className="font-bold text-slate-800 mb-4">Final WCE Comparison</h3>
-            <div className="space-y-3">
-              {trialSeries.map(({ trial, finalWce }, i) => (
-                <div key={trial.ID}>
-                  <div className="flex justify-between text-xs mb-1">
-                    <span className="font-semibold text-slate-700 truncate max-w-[60%]">{trial.FormulationName}</span>
-                    <span className="font-bold" style={{ color: COLORS[i % COLORS.length] }}>{finalWce !== null ? `${finalWce}%` : '—'}</span>
-                  </div>
-                  <div className="h-3 bg-slate-100 rounded-full overflow-hidden">
-                    {finalWce !== null && (
-                      <div className="h-full rounded-full transition-all" style={{ width: `${Math.min(100, Math.max(0, finalWce))}%`, backgroundColor: COLORS[i % COLORS.length] }} />
-                    )}
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-
         {/* AI Summary */}
         <div className="bg-white rounded-xl shadow-sm border border-slate-100 p-5">
           <div className="flex justify-between items-center mb-3">
-            <h3 className="font-bold text-slate-800 flex items-center gap-2"><Sparkles className="w-4 h-4 text-indigo-500" />AI Executive Summary</h3>
+            <h3 className="font-bold text-slate-800 flex items-center gap-2"><Sparkles className="w-4 h-4 text-indigo-500" />AI Comparative Agronomist Report</h3>
             <button onClick={handleGenerateSummary} disabled={isGenerating}
               className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white text-sm font-semibold rounded-lg hover:bg-indigo-700 transition disabled:opacity-50">
               {isGenerating ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
-              {isGenerating ? 'Analysing...' : 'Generate Summary'}
+              {isGenerating ? 'Analyzing Trials...' : 'Generate AI Report'}
             </button>
           </div>
           {aiSummary ? (
             <div className="bg-indigo-50 rounded-xl p-4 text-sm text-indigo-900 whitespace-pre-wrap leading-relaxed"
               dangerouslySetInnerHTML={{ __html: aiSummary.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>').replace(/\n/g, '<br/>') }} />
           ) : (
-            <p className="text-sm text-slate-400">Click "Generate Summary" to get an AI-powered comparative analysis of the selected trials.</p>
+            <p className="text-sm text-slate-400">Click "Generate AI Report" to perform an end-to-end scientific comparison analysis across the selected trials.</p>
           )}
         </div>
 
@@ -194,8 +385,11 @@ export default function CompareTrials({ onMenuClick }) {
         {allDaa.length > 0 && (
           <div className="bg-white rounded-xl shadow-sm border border-slate-100 overflow-hidden">
             <div className="px-5 py-4 border-b">
-              <h3 className="font-bold text-slate-800">Weed Cover Timeline (% per DAA)</h3>
-              <p className="text-xs text-slate-400 mt-0.5">Comparing weed cover % at each Days After Application point</p>
+              <h3 className="font-bold text-slate-800 flex items-center gap-2">
+                <Table className="w-4 h-4 text-slate-500" />
+                Weed Cover Timeline (% per DAA)
+              </h3>
+              <p className="text-xs text-slate-400 mt-0.5">Comparing weed cover % and control % at each Days After Application point</p>
             </div>
             <div className="overflow-x-auto">
               <table className="w-full text-sm text-left">
@@ -236,13 +430,16 @@ export default function CompareTrials({ onMenuClick }) {
         {/* Side-by-side detail */}
         <div className="bg-white rounded-xl shadow-sm border border-slate-100 overflow-hidden">
           <div className="px-5 py-4 border-b">
-            <h3 className="font-bold text-slate-800">Full Comparison Table</h3>
+            <h3 className="font-bold text-slate-800 flex items-center gap-2">
+              <Table className="w-4 h-4 text-slate-500" />
+              Full Comparative Specification Details
+            </h3>
           </div>
           <div className="overflow-x-auto">
             <table className="w-full text-sm text-left">
               <thead className="bg-slate-50 border-b border-slate-100">
                 <tr>
-                  <th className="px-5 py-3 font-semibold text-slate-600">Field</th>
+                  <th className="px-5 py-3 font-semibold text-slate-600">Field / Parameter</th>
                   {trialSeries.map(({ trial }, i) => (
                     <th key={trial.ID} className="px-5 py-3 font-semibold" style={{ color: COLORS[i % COLORS.length] }}>{trial.FormulationName}</th>
                   ))}
@@ -250,24 +447,39 @@ export default function CompareTrials({ onMenuClick }) {
               </thead>
               <tbody className="divide-y divide-slate-50">
                 {[
-                  ['Location', t => t.Location || '—'],
-                  ['Date', t => t.Date ? new Date(t.Date).toLocaleDateString() : '—'],
-                  ['Dosage', t => t.Dosage || '—'],
-                  ['Target Weeds', t => t.WeedSpecies || '—'],
-                  ['Investigator', t => t.InvestigatorName || '—'],
-                  ['Result', t => t.Result || '—'],
-                  ['Temperature', t => t.Temperature ? `${t.Temperature}°C` : '—'],
-                  ['Humidity', t => t.Humidity ? `${t.Humidity}%` : '—'],
-                  ['Wind Speed', t => t.Windspeed ? `${t.Windspeed} km/h` : '—'],
-                  ['Rainfall', t => t.Rain ? `${t.Rain} mm` : '—'],
-                  ['Observations', t => safeJsonParse(t.EfficacyDataJSON, []).length],
-                  ['Photos', t => safeJsonParse(t.PhotoURLs, []).length],
-                  ['Status', t => (t.IsCompleted === true || t.IsCompleted === 'true') ? 'Finalized' : 'Active'],
-                ].map(([label, getter]) => (
+                  // Chemistry
+                  ['Active Ingredients', t => t.activeIngredients, Cpu],
+                  ['Cost / Hectare', t => t.costPerHa, DollarSign],
+                  ['Dosage Rate', t => t.Dosage || '—', Cpu],
+                  ['Target Weed Species', t => t.WeedSpecies || '—', Cpu],
+
+                  // Soil Profile
+                  ['Soil Texture', t => t.texture || '—', Compass],
+                  ['Soil pH', t => t.pH, Compass],
+                  ['Soil Clay %', t => t.clay, Compass],
+                  ['Soil Sand %', t => t.sand, Compass],
+                  ['Soil Organic Carbon %', t => t.oc, Compass],
+
+                  // Weather Conditions
+                  ['Avg Temperature', t => t.avgTemp, Cloud],
+                  ['Avg Humidity', t => t.avgHumid, Cloud],
+                  ['Avg Wind Speed', t => t.avgWind, Cloud],
+                  ['Avg Rainfall', t => t.avgRain, Cloud],
+
+                  // Metadata & Conclusion
+                  ['Location', t => t.Location || '—', Table],
+                  ['Application Date', t => t.Date ? new Date(t.Date).toLocaleDateString() : '—', Table],
+                  ['Investigator', t => t.InvestigatorName || '—', Table],
+                  ['Overall Assessment', t => t.Result || '—', Table],
+                  ['Final Status', t => (t.IsCompleted === true || t.IsCompleted === 'true') ? 'Finalized' : 'Active', Table],
+                ].map(([label, getter, Icon]) => (
                   <tr key={label} className="hover:bg-slate-50">
-                    <td className="px-5 py-3 font-semibold text-slate-500">{label}</td>
+                    <td className="px-5 py-3 font-semibold text-slate-600 flex items-center gap-2">
+                      {Icon && <Icon className="w-4 h-4 opacity-50" />}
+                      {label}
+                    </td>
                     {trialSeries.map(({ trial }) => (
-                      <td key={trial.ID} className="px-5 py-3 text-slate-700">{getter(trial)}</td>
+                      <td key={trial.ID} className="px-5 py-3 text-slate-700 font-medium">{getter(trial)}</td>
                     ))}
                   </tr>
                 ))}
@@ -280,3 +492,4 @@ export default function CompareTrials({ onMenuClick }) {
     </div>
   );
 }
+
