@@ -226,17 +226,28 @@ Soil Profile: pH=${trial.pH}, Clay=${trial.clay}, Texture=${trial.texture}
 Weather: Temp=${trial.avgTemp}, Humid=${trial.avgHumid}, Rain=${trial.avgRain}`
     ).join('\n\n');
 
-    const prompt = `You are a professional senior agronomist and weed science specialist. Conduct a thorough end-to-end scientific comparison report of the following herbicide trials. Provide your analysis in 3 distinct sections:
-1. Executive Summary: High-level overview of which formulation and treatment performed best and the primary takeaways.
-2. Timeline & Efficacy Analysis: Compare how weed control (WCE %) progressed over different Days After Application (DAA) points.
-3. Chemistry & Environmental Analysis: Evaluate the active ingredients, concentration levels, dosage efficiency, and relation to soil profiles or weather conditions.
+    const prompt = `You are a professional senior agronomist and weed science specialist. Conduct a thorough, scientifically rigorous comparison report of the following herbicide trials. Provide your analysis in 3 distinct sections using clean Markdown styling (no raw text diagrams or code blocks):
 
-CRITICAL RULES & CONTRAINTS:
-- Do NOT mention or discuss financial costs, prices, cost-effectiveness, premium pricing, or any dollar ($) related figures anywhere in the report.
-- Do NOT include any recommendations, future suggestions, or advice on changes to make for future sprayings.
-- Do NOT describe the results as a "systemic failure", "widespread failure", "anomaly", "underdosage", or imply the trial had systemic issues or faults. Focus objectively and scientifically on the observed efficacy metrics, chemistry characteristics, and environmental parameters without negative diagnostics or critiques.
+### 1. Executive Summary
+- Provide a high-level, formal agronomist assessment of the treatments.
+- Summarize the comparative performance metrics objectively without using negative diagnostics or referring to any systemic failures or anomalies.
 
-Use professional, clean, agronomist language. Here is the trial data:
+### 2. Timeline & Efficacy Analysis
+- Compare the progression of Weed Control Efficiency (WCE %) chronologically over the observed Days After Application (DAA) intervals.
+- Do NOT draw text-based diagrams or flowcharts using dashes and arrows (like \\\`--->\\\` or ascii charts); use standard descriptive paragraphs.
+- Contrast the uptake profiles, physiological response curves, and control levels observed.
+
+### 3. Chemistry & Environmental Analysis
+- Detail active ingredients, dosage rates, and physiological factors influencing foliar absorption.
+- Evaluate the influence of microclimatic conditions (Temperature, Relative Humidity, rainfall) and soil properties (pH, Clay %, Sand %, OC %, Texture).
+- Present key environmental parameters in a clean Markdown table comparing formulations, temperature, relative humidity, and final WCE.
+
+CRITICAL RULES & CONSTRAINT COMPLIANCE:
+- Never mention, reference, or evaluate financial costs, chemical prices, cost-benefit analysis, premium pricing, or any dollar ($) figures.
+- Never write recommendations, future advice, dosing adjustments, or suggestions for future trials.
+- Never use terms such as "systemic failure", "widespread failure", "anomaly", "underdosage", "flawed design", or imply that the trials were faulty. Focus entirely on explaining the physiological responses, environmental/meteorological parameters, and droplet dynamics in a standard agronomist assessment.
+
+Use highly professional, academic, and scientific terminology. Here is the trial data:
 ${contextData}`;
 
     try {
