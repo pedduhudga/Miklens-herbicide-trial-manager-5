@@ -5,6 +5,7 @@
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import pptxgen from 'pptxgenjs';
+import { formatPhotoDate } from '../utils/dateUtils.js';
 
 // ── COLORS ────────────────────────────────────────────────────────────────────
 const TEAL    = [13, 148, 136];
@@ -178,9 +179,9 @@ async function addPhotoGrid(doc, photos, y, ph, maxSize = 50, showDates = true) 
       if (y + ih + 14 > ph - 20) { doc.addPage(); y = 20; xOff = 14; }
       addImgSafe(doc, imgData, xOff, y, iw, ih);
       doc.setFontSize(7);
-      const label = p.label || (p.date ? `Photo: ${new Date(p.date).toLocaleDateString()}` : `Photo ${i + 1}`);
+      const label = p.label || (p.date ? `Photo: ${formatPhotoDate(p.date)}` : `Photo ${i + 1}`);
       doc.text(label, xOff, y + ih + 4, { maxWidth: iw + 8 });
-      if (showDates && p.date && p.label) doc.text(new Date(p.date).toLocaleDateString(), xOff, y + ih + 8, { maxWidth: iw + 8 });
+      if (showDates && p.date && p.label) doc.text(formatPhotoDate(p.date), xOff, y + ih + 8, { maxWidth: iw + 8 });
       xOff += iw + 12;
     } catch { /* skip */ }
   }
@@ -794,7 +795,7 @@ export function exportHtmlReport(trial, projectName = '') {
   const photoHtml = photos.map((p, i) => {
     const src = photoSrc(p); if (!src) return '';
     const label = p.label || `Photo ${i + 1}`;
-    const date  = p.date ? new Date(p.date).toLocaleDateString() : '';
+    const date  = p.date ? formatPhotoDate(p.date) : '';
     return `<div style="break-inside:avoid;display:inline-block;margin:6px;vertical-align:top;width:180px;">
       <img src="${src}" style="width:180px;height:135px;object-fit:cover;border-radius:8px;border:1px solid #e2e8f0;" onerror="this.style.display='none'" />
       <p style="font-size:11px;color:#475569;margin:4px 0 0;">${label}</p>

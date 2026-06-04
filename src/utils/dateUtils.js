@@ -70,3 +70,34 @@ export function toDateKey (value) {
                     return 0;
                 }
             };
+
+            export function formatPhotoDate(dateStr) {
+                if (!dateStr) return '';
+                // If it already has AM/PM, it is already formatted
+                if (/AM|PM|am|pm/i.test(dateStr)) return dateStr;
+                const d = new Date(dateStr);
+                if (isNaN(d.getTime())) return dateStr;
+                
+                const y = d.getFullYear();
+                const m = String(d.getMonth() + 1).padStart(2, '0');
+                const day = String(d.getDate()).padStart(2, '0');
+                
+                let hours = d.getHours();
+                const minutes = String(d.getMinutes()).padStart(2, '0');
+                const ampm = hours >= 12 ? 'PM' : 'AM';
+                hours = hours % 12;
+                hours = hours ? hours : 12;
+                
+                return `${y}-${m}-${day} ${hours}:${minutes}${ampm}`;
+            }
+
+            export function toDatetimeLocal(dateInput) {
+                const d = dateInput ? new Date(dateInput) : new Date();
+                if (isNaN(d.getTime())) return '';
+                const y = d.getFullYear();
+                const m = String(d.getMonth() + 1).padStart(2, '0');
+                const day = String(d.getDate()).padStart(2, '0');
+                const h = String(d.getHours()).padStart(2, '0');
+                const min = String(d.getMinutes()).padStart(2, '0');
+                return `${y}-${m}-${day}T${h}:${min}`;
+            }

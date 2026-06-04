@@ -15,7 +15,7 @@ import {
   FileCode, MonitorPlay, Archive, Pencil, ScanLine, Crop, Clock
 } from 'lucide-react';
 import { safeJsonParse } from '../utils/helpers.js';
-import { calculateDAA, toDateKey } from '../utils/dateUtils.js';
+import { calculateDAA, toDateKey, formatPhotoDate, toDatetimeLocal } from '../utils/dateUtils.js';
 import { validateEfficacyData } from '../utils/analysisUtils.js';
 import CameraCapture from '../components/CameraCapture.jsx';
 import CropperModal from '../components/CropperModal.jsx';
@@ -785,7 +785,7 @@ export default function Trials({ onMenuClick }) {
     if (!targetTrial) return;
     setAiGenRunning(dataUrl || true);
 
-    const photoDate = photoDateStr || new Date().toISOString().split('T')[0];
+    const photoDate = formatPhotoDate(photoDateStr || new Date().toISOString());
     const fileName = `photo_${targetTrial.ID}_${Date.now()}.jpg`;
     const tempId = `local_${Date.now()}`;
 
@@ -976,7 +976,7 @@ export default function Trials({ onMenuClick }) {
   };
 
   const promptPhotoDate = (dataUrl, targetTrial = null) => {
-    setPendingPhotoAnalysis({ dataUrl, date: new Date().toISOString().split('T')[0], targetTrial });
+    setPendingPhotoAnalysis({ dataUrl, date: toDatetimeLocal(new Date()), targetTrial });
   };
 
   const handleCapturePhoto = (dataUrl) => {
@@ -2225,7 +2225,7 @@ If none are present, write "None".`;
     const sortedOriginalPhotos = [...photos].sort((a, b) => new Date(a.date || 0) - new Date(b.date || 0));
     const rank = sortedOriginalPhotos.indexOf(oldPhoto);
 
-    photos[photoEditModal.idx] = { ...oldPhoto, label: photoEditModal.label, date: newDate };
+    photos[photoEditModal.idx] = { ...oldPhoto, label: photoEditModal.label, date: formatPhotoDate(newDate) };
 
     const efficacyData = validateEfficacyData(safeJsonParse(activeTrial.EfficacyDataJSON, []));
     let efficacyChanged = false;
@@ -2961,7 +2961,7 @@ If none are present, write "None".`;
                               <div className="flex justify-between items-start mb-3">
                                 <div className="flex items-center gap-2 flex-wrap">
                                   <span className="bg-slate-700 text-white font-bold px-2 py-1 rounded text-xs">DAA {obs.daa ?? 0}</span>
-                                  <span className="text-xs text-slate-500">{obs.date ? new Date(obs.date).toLocaleDateString() : ''}</span>
+                                  <span className="text-xs text-slate-500">{obs.date ? formatPhotoDate(obs.date) : ''}</span>
                                   {wceRating && <span className={`text-xs font-bold px-2 py-0.5 rounded-full ${wceCls}`}>{wceRating}</span>}
                                   {obs.source === 'AI' && <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-purple-100 text-purple-700 font-semibold">AI</span>}
                                   {obs.aiConfidence && <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-semibold ${obs.aiConfidence === 'HIGH' ? 'bg-emerald-100 text-emerald-700' : obs.aiConfidence === 'MEDIUM' ? 'bg-amber-100 text-amber-700' : 'bg-red-100 text-red-700'}`}>{obs.aiConfidence}</span>}
@@ -3130,7 +3130,7 @@ If none are present, write "None".`;
                             </div>
                             <div className="px-2 pt-1.5 pb-1">
                               <p className="text-xs font-semibold text-slate-700 truncate">{photo.label || `Photo ${idx+1}`}</p>
-                              {photo.date && <p className="text-[10px] text-slate-400">{new Date(photo.date).toLocaleDateString()}</p>}
+                              {photo.date && <p className="text-[10px] text-slate-400">{formatPhotoDate(photo.date)}</p>}
                             </div>
                             <div className="px-2 pb-2 flex gap-1 flex-wrap">
                               <button onClick={() => identifyWeedFromPhoto(src)} title="AI Weed ID"
@@ -3145,7 +3145,7 @@ If none are present, write "None".`;
                                 className="flex items-center gap-1 px-2 py-1 text-[10px] font-semibold bg-slate-100 text-slate-700 rounded-lg hover:bg-slate-200">
                                 <Crop className="w-3 h-3" />Crop
                               </button>
-                              <button onClick={() => setPhotoEditModal({ idx, label: photo.label || '', date: photo.date || '' })} title="Edit label/date"
+                              <button onClick={() => setPhotoEditModal({ idx, label: photo.label || '', date: toDatetimeLocal(photo.date || new Date()) })} title="Edit label/date"
                                 className="flex items-center gap-1 px-2 py-1 text-[10px] font-semibold bg-slate-100 text-slate-700 rounded-lg hover:bg-slate-200">
                                 <Pencil className="w-3 h-3" />Edit
                               </button>
@@ -4051,7 +4051,7 @@ If none are present, write "None".`;
             </div>
             <div>
               <label className="block text-xs font-semibold text-slate-500 uppercase mb-1">Photo Date</label>
-              <input type="date" value={photoEditModal.date} onChange={e => setPhotoEditModal(p => ({...p, date: e.target.value}))}
+              <input type="datetime-local" value={photoEditModal.date} onChange={e => setPhotoEditModal(p => ({...p, date: e.target.value}))}
                 className="w-full px-3 py-2 text-sm border rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-400" />
             </div>
             <div className="flex justify-end gap-3 pt-2 border-t">
@@ -4075,9 +4075,9 @@ If none are present, write "None".`;
             <p className="text-xs text-slate-500">The date determines the <strong>Days After Application (DAA)</strong> for the observation record.</p>
             <div>
               <label className="block text-xs font-semibold text-slate-500 uppercase mb-1">Photo Date</label>
-              <input type="date"
+              <input type="datetime-local"
                 value={pendingPhotoAnalysis.date}
-                max={new Date().toISOString().split('T')[0]}
+                max={toDatetimeLocal(new Date())}
                 onChange={e => setPendingPhotoAnalysis(p => ({ ...p, date: e.target.value }))}
                 className="w-full px-3 py-2 text-sm border rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-400" />
             </div>
