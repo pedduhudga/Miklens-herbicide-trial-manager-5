@@ -380,14 +380,21 @@ export default function Statistics() {
           {results.treatmentMeans && (
             <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
               <div className="px-4 py-3 bg-slate-50 border-b border-slate-200">
-                <h3 className="font-semibold text-slate-800">Treatment Means</h3>
+                <h3 className="font-semibold text-slate-800">Treatment Means {results.test && `(${results.test})`}</h3>
               </div>
               <div className="p-4">
                 <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
                   {Object.entries(results.treatmentMeans).map(([trt, mean]) => (
-                    <div key={trt} className="bg-slate-50 p-3 rounded-lg">
-                      <p className="text-xs text-slate-500 truncate" title={trt}>{trt}</p>
-                      <p className="text-lg font-bold text-slate-800">{mean.toFixed(2)}</p>
+                    <div key={trt} className="bg-slate-50 p-3 rounded-lg flex flex-col justify-between">
+                      <p className="text-xs text-slate-500 truncate mb-1" title={trt}>{trt}</p>
+                      <div className="flex items-baseline justify-between">
+                        <span className="text-lg font-bold text-slate-800">{mean.toFixed(2)}</span>
+                        {results.groups?.[trt] && (
+                          <span className="text-xs font-bold text-emerald-600 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded" title={`Tukey Significance Group: ${results.groups[trt]}`}>
+                            {results.groups[trt]}
+                          </span>
+                        )}
+                      </div>
                     </div>
                   ))}
                 </div>

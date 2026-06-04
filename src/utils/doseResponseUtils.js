@@ -13,40 +13,55 @@
  * 4-parameter log-logistic function
  */
 export function ll4(dose, b, c, d, e) {
-  if (dose <= 0) return d; // zero dose = untreated = max weed cover
+  if (dose <= 0) return d;
   return c + (d - c) / (1 + Math.pow(dose / e, b));
 }
 
 /**
- * Compute residual sum of squares for given parameters vs data
+ * Compute residual sum of squares with parameter constraints/penalties
  */
-function rss(params, data) {
+function constrainedRss(params, data) {
   const [b, c, d, e] = params;
+  let penalty = 0;
+  
+  // c and d should be between 0 and 100
+  if (c < 0) penalty += Math.pow(c, 2) * 1000;
+  if (c > 100) penalty += Math.pow(c - 100, 2) * 1000;
+  if (d < 0) penalty += Math.pow(d, 2) * 1000;
+  if (d > 100) penalty += Math.pow(d - 100, 2) * 1000;
+  
+  // e (ED50) must be positive
+  if (e <= 0.001) penalty += Math.pow(e - 0.001, 2) * 100000;
+  
+  // Slope b should not be extremely close to 0
+  if (Math.abs(b) < 0.05) penalty += 10000;
+  
   let sum = 0;
   for (const { dose, response } of data) {
     const predicted = ll4(dose, b, c, d, e);
-    sum += Math.pow(response - predicted, 2);
+    if (isNaN(predicted) || !isFinite(predicted)) {
+      sum += 1e6;
+    } else {
+      sum += Math.pow(response - predicted, 2);
+    }
   }
-  return sum;
+  return sum + penalty;
 }
 
 /**
  * Nelder-Mead simplex optimiser (pure JS, no dependencies)
- * Minimises fn(params) given initial guess
  */
 function nelderMead(fn, initialParams, options = {}) {
   const {
     maxIter = 5000,
     tol = 1e-8,
-    alpha = 1.0,   // reflection
-    gamma = 2.0,   // expansion
-    rho = 0.5,     // contraction
-    sigma = 0.5    // shrink
+    alpha = 1.0,
+    gamma = 2.0,
+    rho = 0.5,
+    sigma = 0.5
   } = options;
 
   const n = initialParams.length;
-
-  // Build initial simplex
   let simplex = [initialParams.slice()];
   for (let i = 0; i < n; i++) {
     const point = initialParams.slice();
@@ -58,40 +73,32 @@ function nelderMead(fn, initialParams, options = {}) {
   let pts = simplex.map(evaluate);
 
   for (let iter = 0; iter < maxIter; iter++) {
-    // Sort by function value
     pts.sort((a, b) => a.v - b.v);
-
-    // Check convergence
     const vBest = pts[0].v;
     const vWorst = pts[pts.length - 1].v;
     if (Math.abs(vBest - vWorst) < tol) break;
 
-    // Centroid of all but worst
     const centroid = new Array(n).fill(0);
     for (let i = 0; i < n; i++) {
       for (let j = 0; j < n; j++) centroid[j] += pts[i].p[j];
     }
     for (let j = 0; j < n; j++) centroid[j] /= n;
 
-    // Reflection
     const reflected = centroid.map((c, j) => c + alpha * (c - pts[n].p[j]));
     const rEval = evaluate(reflected);
 
     if (rEval.v < pts[0].v) {
-      // Expansion
       const expanded = centroid.map((c, j) => c + gamma * (reflected[j] - c));
       const eEval = evaluate(expanded);
       pts[n] = eEval.v < rEval.v ? eEval : rEval;
     } else if (rEval.v < pts[n - 1].v) {
       pts[n] = rEval;
     } else {
-      // Contraction
       const contracted = centroid.map((c, j) => c + rho * (pts[n].p[j] - c));
       const cEval = evaluate(contracted);
       if (cEval.v < pts[n].v) {
         pts[n] = cEval;
       } else {
-        // Shrink
         const best = pts[0].p;
         pts = pts.map((pt, i) => i === 0 ? pt : evaluate(best.map((b, j) => b + sigma * (pt.p[j] - b))));
       }
@@ -104,24 +111,17 @@ function nelderMead(fn, initialParams, options = {}) {
 
 /**
  * Fit 4-parameter log-logistic model to dose-response data
- *
- * @param {Array<{dose: number, response: number}>} data
- *   dose: application rate (g ai/ha or L/ha)
- *   response: % weed control (0–100) or % biomass reduction
- * @returns {Object} fitted parameters + derived metrics
  */
 export function fitDoseResponse(data) {
   if (!data || data.length < 3) {
     return { error: 'Need at least 3 data points to fit a curve' };
   }
 
-  // Filter valid points
   const valid = data.filter(d => d.dose >= 0 && d.response >= 0 && d.response <= 100);
   if (valid.length < 3) {
     return { error: 'Need at least 3 valid data points (dose ≥ 0, response 0–100)' };
   }
 
-  // Initial parameter estimates
   const responses = valid.map(d => d.response);
   const dMin = Math.min(...responses);
   const dMax = Math.max(...responses);
@@ -130,18 +130,22 @@ export function fitDoseResponse(data) {
     ? Math.exp(doses.map(Math.log).reduce((a, b) => a + b, 0) / doses.length)
     : 100;
 
-  // Try multiple starting points to avoid local minima
+  // Determine direction: if high doses have higher response, it is an increasing curve (slope b should be negative)
+  // if high doses have lower response, it is a decaying curve (slope b should be positive)
+  const isIncreasing = responses[responses.length - 1] > responses[0];
+  const initialSlope = isIncreasing ? -2.0 : 2.0;
+
   const starts = [
-    [2, dMin, dMax, midDose],
-    [1.5, 0, 100, midDose],
-    [3, dMin, dMax, midDose * 0.5],
-    [1, dMin, dMax, midDose * 2],
+    [initialSlope, dMin, dMax, midDose],
+    [initialSlope, 0, 100, midDose],
+    [initialSlope * 1.5, dMin, dMax, midDose * 0.5],
+    [initialSlope * 0.5, dMin, dMax, midDose * 2],
   ];
 
   let best = null;
   for (const init of starts) {
     try {
-      const result = nelderMead(p => rss(p, valid), init);
+      const result = nelderMead(p => constrainedRss(p, valid), init);
       if (!best || result.value < best.value) {
         best = result;
       }
@@ -152,10 +156,9 @@ export function fitDoseResponse(data) {
 
   let [b, c, d, e] = best.params;
 
-  // Enforce physical constraints
-  b = Math.abs(b); // slope must be positive
-  c = Math.max(0, Math.min(c, 99));
-  d = Math.max(c + 1, Math.min(d, 100));
+  // Enforce parameter boundaries post-fit
+  c = Math.max(0, Math.min(c, 100));
+  d = Math.max(0, Math.min(d, 100));
   e = Math.max(0.001, e);
 
   // Calculate goodness of fit (R²)
@@ -167,18 +170,16 @@ export function fitDoseResponse(data) {
 
   // ED values: dose giving x% response between c and d
   const computeED = (pct) => {
-    // Solve: pct/100 * (d - c) + c = ll4(dose)
-    // => dose = e * ((d - c) / (response - c) - 1)^(1/b)
-    const target = (pct / 100) * (d - c) + c;
-    if (target <= c || target >= d) return null;
-    return e * Math.pow((d - c) / (target - c) - 1, -1 / b);
+    if (pct <= 0 || pct >= 100) return null;
+    const ratio = (100 - pct) / pct;
+    const ed = e * Math.pow(ratio, 1 / b);
+    return isNaN(ed) || !isFinite(ed) ? null : ed;
   };
 
   const ed10 = computeED(10);
-  const ed50 = computeED(50); // = e for standard LL.4
+  const ed50 = computeED(50);
   const ed90 = computeED(90);
 
-  // Selectivity index (ED90/ED10) — measures steepness of curve
   const selectivityIndex = ed10 && ed90 ? ed90 / ed10 : null;
 
   // Generate smooth curve points for plotting (log scale)
@@ -210,6 +211,7 @@ export function fitDoseResponse(data) {
     }))
   };
 }
+
 
 /**
  * Extract dose-response data from app trials for a given formulation + weed species

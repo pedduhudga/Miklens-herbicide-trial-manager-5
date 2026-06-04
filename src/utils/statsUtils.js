@@ -201,7 +201,7 @@ export function performTukeyHSD(trials, options = {}) {
   }
   
   // Group treatments (letter display)
-  const groups = assignLetterGroups(trtNames, comparisons, hsd);
+  const groups = assignLetterGroups(trtNames, treatmentMeans, comparisons);
   
   return {
     ...anova,
@@ -270,20 +270,72 @@ export function performDunnettTest(trials, controlName, options = {}) {
 /**
  * Assign letter groups for treatment means display
  */
-function assignLetterGroups(treatments, comparisons, hsd) {
-  const sorted = [...treatments].sort((a, b) => {
-    // This is a placeholder - we'd need actual means passed in
-    return 0;
+function assignLetterGroups(treatments, treatmentMeans, comparisons) {
+  // Sort treatments by mean descending
+  const sortedTrts = [...treatments].sort((a, b) => (treatmentMeans[b] || 0) - (treatmentMeans[a] || 0));
+  
+  if (sortedTrts.length === 0) return {};
+  if (sortedTrts.length === 1) return { [sortedTrts[0]]: 'a' };
+
+  // Create a helper to check if two treatments are significantly different
+  const isSig = (t1, t2) => {
+    if (t1 === t2) return false;
+    const comp = comparisons.find(c => 
+      (c.treatmentA === t1 && c.treatmentB === t2) || 
+      (c.treatmentA === t2 && c.treatmentB === t1)
+    );
+    return comp ? comp.significant : false;
+  };
+
+  // Find homogenous groups (maximal cliques of non-significance)
+  const groups = [];
+  
+  for (let i = 0; i < sortedTrts.length; i++) {
+    const trt = sortedTrts[i];
+    const clique = [trt];
+    for (let j = i + 1; j < sortedTrts.length; j++) {
+      const candidate = sortedTrts[j];
+      let canAdd = true;
+      for (const member of clique) {
+        if (isSig(member, candidate)) {
+          canAdd = false;
+          break;
+        }
+      }
+      if (canAdd) {
+        clique.push(candidate);
+      }
+    }
+    
+    // Check if this clique is a subset of any already found clique
+    let isSubset = false;
+    for (const existing of groups) {
+      if (clique.every(val => existing.includes(val))) {
+        isSubset = true;
+        break;
+      }
+    }
+    if (!isSubset) {
+      groups.push(clique);
+    }
+  }
+
+  // Now assign letters to groups.
+  // Group 0 gets 'a', Group 1 gets 'b', etc.
+  const letters = 'abcdefghijklmnopqrstuvwxyz';
+  const trtLetters = {};
+  sortedTrts.forEach(t => {
+    trtLetters[t] = '';
   });
-  
-  const letters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
-  const groups = {};
-  
-  treatments.forEach((trt, i) => {
-    groups[trt] = letters[i] || '*';
+
+  groups.forEach((clique, groupIdx) => {
+    const letter = letters[groupIdx] || '*';
+    clique.forEach(trt => {
+      trtLetters[trt] += letter;
+    });
   });
-  
-  return groups;
+
+  return trtLetters;
 }
 
 /**
@@ -397,26 +449,84 @@ const DUNNETT_TABLE_01 = {
   "inf": [2.58, 2.81, 2.93, 3.02, 3.09, 3.14, 3.18, 3.22, 3.25]
 };
 
+function logGamma(z) {
+  const g = 7;
+  const c = [
+    0.99999999999980993,
+    676.5203681218851,
+    -1259.1392167224028,
+    771.32342877765313,
+    -176.61502916214059,
+    12.507343278686905,
+    -0.13857109526572012,
+    9.9843695780195716e-6,
+    1.5056327351493116e-7
+  ];
+  if (z < 0.5) return Math.log(Math.PI) - Math.log(Math.sin(Math.PI * z)) - logGamma(1 - z);
+  z -= 1;
+  let x = c[0];
+  for (let i = 1; i < g + 2; i++) x += c[i] / (z + i);
+  const t = z + g + 0.5;
+  return 0.5 * Math.log(2 * Math.PI) + (z + 0.5) * Math.log(t) - t + Math.log(x);
+}
+
+function regularizedIncompleteBeta(x, a, b) {
+  if (x < 0 || x > 1) return NaN;
+  if (x === 0) return 0;
+  if (x === 1) return 1;
+
+  if (x > (a + 1) / (a + b + 2)) {
+    return 1 - regularizedIncompleteBeta(1 - x, b, a);
+  }
+
+  const lbeta = logGamma(a) + logGamma(b) - logGamma(a + b);
+  const front = Math.exp(a * Math.log(x) + b * Math.log(1 - x) - lbeta) / a;
+
+  const f_eps = 1e-15;
+  const max_iter = 100;
+  
+  let f = 1.0;
+  let c = 1.0;
+  let d = 0.0;
+  
+  for (let m = 0; m <= max_iter; m++) {
+    let numerator;
+    if (m === 0) {
+      numerator = 1.0;
+    } else if (m % 2 === 0) {
+      const k = m / 2;
+      numerator = (k * (b - k) * x) / ((a + 2 * k - 1) * (a + 2 * k));
+    } else {
+      const k = (m - 1) / 2;
+      numerator = -((a + k) * (a + b + k) * x) / ((a + 2 * k) * (a + 2 * k + 1));
+    }
+    
+    d = 1.0 + numerator * d;
+    if (Math.abs(d) < f_eps) d = f_eps;
+    d = 1.0 / d;
+    
+    c = 1.0 + numerator / c;
+    if (Math.abs(c) < f_eps) c = f_eps;
+    
+    const delta = c * d;
+    f = f * delta;
+    
+    if (Math.abs(delta - 1.0) < f_eps) {
+      break;
+    }
+  }
+  
+  return front * (f - 1.0);
+}
+
 /**
- * Approximate p-value from F-distribution using incomplete beta function approximation
+ * Approximate p-value from F-distribution using regularized incomplete beta function
  */
 function approximatePValue(f, df1, df2) {
-  // Simplified approximation using F-distribution properties
   if (f <= 0) return 1;
-  if (f > 100) return 0;
-  
-  // Approximate using ratio
   const x = (df1 * f) / (df1 * f + df2);
-  
-  // Beta function approximation (simplified)
-  const betaApprox = (a, b, x) => {
-    // Incomplete beta approximation
-    return Math.pow(x, a) * Math.pow(1 - x, b) / (a * Math.exp(a + b));
-  };
-  
-  // This is a rough approximation - in production use a proper statistical library
-  const p = 1 - betaApprox(df1 / 2, df2 / 2, x);
-  return Math.max(0, Math.min(1, p));
+  const pVal = 1 - regularizedIncompleteBeta(x, df1 / 2, df2 / 2);
+  return isNaN(pVal) ? 1.0 : Math.max(0, Math.min(1, pVal));
 }
 
 /**
