@@ -26,6 +26,53 @@ export default function CompareTrials({ onMenuClick }) {
   const formulations = state.formulations || [];
   const ingredientsList = state.ingredients || [];
 
+  // Automatically fetch missing weather parameters dynamically when mounting
+  useEffect(() => {
+    selectedTrials.forEach(async (t) => {
+      const weatherData = safeJsonParse(t.WeatherJSON, null);
+      const hasAvgWeather = t.Temperature || t.Humidity || t.Windspeed || t.Rain || (weatherData && Object.keys(weatherData).length > 0);
+      if (!hasAvgWeather && t.Lat && t.Lon && t.Date) {
+        try {
+          const formattedDate = new Date(t.Date).toISOString().split('T')[0];
+          const wUrl = `https://archive-api.open-meteo.com/v1/archive?latitude=${t.Lat}&longitude=${t.Lon}&start_date=${formattedDate}&end_date=${formattedDate}&daily=temperature_2m_max,relative_humidity_2m_mean,wind_speed_10m_max,rain_sum&timezone=auto`;
+          const wr = await fetch(wUrl);
+          const wd = await wr.json();
+          if (wd && wd.daily && wd.daily.time && wd.daily.time.length > 0) {
+            const wObj = {
+              temp: wd.daily.temperature_2m_max[0],
+              humidity: wd.daily.relative_humidity_2m_mean[0],
+              wind: wd.daily.wind_speed_10m_max[0],
+              rain: wd.daily.rain_sum[0],
+              provider: 'Open-Meteo'
+            };
+            const updated = { 
+              ...t, 
+              Temperature: wObj.temp,
+              Humidity: wObj.humidity,
+              Windspeed: wObj.wind,
+              Rain: wObj.rain,
+              WeatherJSON: JSON.stringify(wObj) 
+            };
+            // Sync to global app state to re-trigger calculations
+            updateState({ trials: (state.trials || []).map(trial => trial.ID === t.ID ? updated : trial) });
+            // Save to server
+            const { updateTrial } = await import('../services/dataLayer.js');
+            await updateTrial({ 
+              ID: updated.ID, 
+              Temperature: updated.Temperature,
+              Humidity: updated.Humidity,
+              Windspeed: updated.Windspeed,
+              Rain: updated.Rain,
+              WeatherJSON: updated.WeatherJSON 
+            }, getAppState);
+          }
+        } catch (e) {
+          console.error("Failed auto-weather fetch for trial compare", t.ID, e);
+        }
+      }
+    });
+  }, [selectedTrials, state.trials, updateState, getAppState]);
+
   const removeFromComparison = (id) => {
     updateState({ selectedTrials: selectedTrials.filter(t => t.ID !== id) });
   };
@@ -217,25 +264,74 @@ export default function CompareTrials({ onMenuClick }) {
     setIsGenerating(true);
     setAiSummary(null);
 
-    const contextData = trialSeries.map(({ trial, finalWce }) =>
-      `Formulation: ${trial.FormulationName}
-Active Ingredients: ${trial.activeIngredients}
-Dosage: ${trial.Dosage || 'N/A'}
-Final WCE: ${finalWce !== null ? finalWce + '%' : 'No data'}
-Soil Profile: pH=${trial.pH}, Clay=${trial.clay}, Texture=${trial.texture}
-Weather: Temp=${trial.avgTemp}, Humid=${trial.avgHumid}, Rain=${trial.avgRain}`
+    // Gather comprehensive metrics for the AI
+    const trialPerformances = trialSeries.map(({ trial, finalWce, eff, baselineCover }) => {
+      // Species efficacy breakdown
+      const speciesMetrics = {};
+      eff.forEach(obs => {
+        const daa = obs.daa ?? 0;
+        const details = obs.weedDetails || [];
+        details.forEach(w => {
+          if (w.species) {
+            if (!speciesMetrics[w.species]) speciesMetrics[w.species] = [];
+            speciesMetrics[w.species].push({ daa, cover: w.cover });
+          }
+        });
+      });
+
+      const speciesBreakdown = Object.entries(speciesMetrics).map(([spName, points]) => {
+        const sortedPts = points.sort((a, b) => a.daa - b.daa);
+        const start = sortedPts[0]?.cover ?? 0;
+        const end = sortedPts[sortedPts.length - 1]?.cover ?? 0;
+        const wce = start > 0 ? Math.round(((start - end) / start) * 100) : 0;
+        return `${spName}: initial ${start}%, final ${end}%, WCE ${wce}%`;
+      }).join('; ') || 'No species-specific breakdowns recorded';
+
+      // Duration of control
+      const duration = trial.FinalControlDuration 
+        ? `${trial.FinalControlDuration} days (finalized)` 
+        : (trial.Date ? `${Math.max(0, Math.round((new Date() - new Date(trial.Date)) / 86400000))} days (active)` : 'Unknown');
+
+      return {
+        name: trial.FormulationName,
+        wce: finalWce ?? 0,
+        ingredients: trial.activeIngredients,
+        dosage: trial.Dosage,
+        duration,
+        speciesBreakdown,
+        soil: `pH=${trial.pH}, Clay=${trial.clay}, Texture=${trial.texture}`,
+        weather: `Temp=${trial.avgTemp}, Humid=${trial.avgHumid}, Rain=${trial.avgRain}`
+      };
+    });
+
+    // Find the best formulation
+    const sortedPerformances = [...trialPerformances].sort((a, b) => b.wce - a.wce);
+    const bestFormulation = sortedPerformances[0];
+
+    const contextData = trialPerformances.map(p =>
+      `Formulation: ${p.name}
+Active Ingredients: ${p.ingredients}
+Dosage: ${p.dosage}
+Control Duration: ${p.duration}
+Final Overall WCE: ${p.wce}%
+Target Weed Efficacy: ${p.speciesBreakdown}
+Soil Profile: ${p.soil}
+Weather Profile: ${p.weather}`
     ).join('\n\n');
 
-    const prompt = `You are a professional senior agronomist and weed science specialist. Conduct a thorough, scientifically rigorous comparison report of the following herbicide trials. Provide your analysis in 3 distinct sections using clean Markdown styling (no raw text diagrams or code blocks):
+    const prompt = `You are a professional senior agronomist and weed science specialist. Conduct a thorough, scientifically rigorous comparison report of the following herbicide trials. Identify which formulation performed best, detail control durations, and species-specific outcomes.
+
+Provide your analysis in 3 distinct sections using clean Markdown styling (no raw text diagrams or code blocks):
 
 ### 1. Executive Summary
-- Provide a high-level, formal agronomist assessment of the treatments.
-- Summarize the comparative performance metrics objectively without using negative diagnostics or referring to any systemic failures or anomalies.
+- State clearly which formulation performed best overall based on the comparative metrics, final WCE %, and duration of control.
+- Outline the key differences in control durations and overall outcomes between the tested treatments.
 
 ### 2. Timeline & Efficacy Analysis
 - Compare the progression of Weed Control Efficiency (WCE %) chronologically over the observed Days After Application (DAA) intervals.
-- Do NOT draw text-based diagrams or flowcharts using dashes and arrows (like \\\`--->\\\` or ascii charts); use standard descriptive paragraphs.
+- Detail the performance on specific weed species (which formulation worked best on which particular weed type, with initial and final cover percentages).
 - Contrast the uptake profiles, physiological response curves, and control levels observed.
+- Do NOT draw text-based diagrams or flowcharts using dashes and arrows (like \\\`--->\\\` or ascii charts); use standard descriptive paragraphs.
 
 ### 3. Chemistry & Environmental Analysis
 - Detail active ingredients, dosage rates, and physiological factors influencing foliar absorption.
