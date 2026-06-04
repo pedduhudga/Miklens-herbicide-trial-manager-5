@@ -1,0 +1,17 @@
+{
+  "name": "Herbicide Trial Manager",
+  "short_name": "TrialManager",
+  "description": "Professional mobile-first agriculture platform for managing herbicide trials.",
+  "start_url": ".",
+  "display": "standalone",
+  "background_color": "#059669",
+  "theme_color": "#059669",
+  "icons": [
+    {
+      "src": "favicon.svg",
+      "sizes": "192x192 512x512",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

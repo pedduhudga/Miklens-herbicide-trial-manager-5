@@ -1,0 +1,2085 @@
+const sheetsConfig = {
+    trials: 'Trials',
+    formulations: 'Formulations',
+    ingredients: 'Ingredients',
+    organisations: 'Organisations',
+    projects: 'Projects',
+    blocks: 'Blocks',
+    settings: 'Settings',
+    analysisLog: 'AnalysisLog',
+    embeddings: 'Embeddings',
+    embeddingsAll: 'EmbeddingsAll',
+    users: 'Users',
+    syncConflicts: 'SyncConflicts',  // Offline conflict resolution log
+    sprayLogs: 'SprayLogs'           // Spray application records
+};
+/* --- HTML SERVICE (Serve the App) --- */
+function doGet(e) {
+    try {
+        const trialId = e.parameter.trialId;
+        const spreadsheetId = e.parameter.spreadsheetId;
+        // If specific parameters exist, serve the Report Card (Legacy/QR Mode)
+        if (trialId && spreadsheetId) {
+            return serveReportCard(trialId, spreadsheetId);
+        }
+        // Default: Serve the Web App (index.html)
+        return HtmlService.createTemplateFromFile('index')
+            .evaluate()
+            .setTitle('Herbicide Trial Manager')
+            .addMetaTag('viewport', 'width=device-width, initial-scale=1')
+            .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
+    } catch (error) {
+        return HtmlService.createHtmlOutput(`<h3>Error loading app</h3><p>${error.message}</p>`);
+    }
+}
+
+function isWriteAction(action) {
+    const readOnlyActions = {
+        login: true,
+        getAllData: true,
+        getAllDataAndSettings: true,
+        getUsersList: true,
+        getImageBase64: true,
+        listTrialPhotosFromDrive: true,
+        scanPhotoConsistency: true,
+        getTrialsByWeed: true,
+        getProjectAnalysisData: true,
+        getTrialEmbeddings: true,
+        getAllEmbeddings: true,
+        adminRunUserDiagnostics: true,
+        adminExportUserData: true,
+        getSyncConflicts: true,
+        getDoseResponseData: true,
+        getResistanceData: true,
+        getSprayLogs: true
+    };
+
+    return !readOnlyActions[String(action || '').trim()];
+}
+
+function executeActionWithLock(action, callback) {
+    if (!isWriteAction(action)) {
+        return callback();
+    }
+
+    const lock = LockService.getScriptLock();
+    lock.waitLock(30000);
+    try {
+        return callback();
+    } finally {
+        lock.releaseLock();
+    }
+}
+/* --- API HANDLER (Google.script.run) --- */
+// This function is called directly by the frontend using google.script.run
+function handleRequest(wrapper) {
+    try {
+        // wrapper contains { action, payload }
+        const { action, payload, auth } = wrapper;
+        const result = executeActionWithLock(action, () => executeAction(action, payload, auth));
+        return result; // Return direct object (no JSON stringify needed for internal calls)
+    } catch (error) {
+        throw new Error(error.message); // Propagate error to onFailure handler
+    }
+}
+/* --- API HANDLER (doPost - Legacy/External) --- */
+function doPost(e) {
+    try {
+        const request = JSON.parse(e.postData.contents);
+        const { action, payload, auth } = request;
+
+        // Log incoming request (redacting large data)
+        const logPayload = { ...payload };
+        if (logPayload.fileData) logPayload.fileData = '[REDACTED]';
+        Logger.log(`Action: ${action} | Payload: ${JSON.stringify(logPayload)}`);
+
+        const result = executeActionWithLock(action, () => executeAction(action, payload, auth));
+        return sendResponse({ status: 'success', data: result, ...result });
+    } catch (error) {
+        Logger.log('doPost Error: ' + error.message);
+        return sendResponse({ status: 'error', message: error.message, stack: error.stack });
+    }
+}
+/* --- CORE LOGIC ROUTER --- */
+function executeAction(action, payload, auth) {
+    // Security: Harden to prefer active spreadsheet when possible
+    let ss;
+    try {
+        ss = SpreadsheetApp.getActiveSpreadsheet();
+    } catch (e) {
+        Logger.log("No active spreadsheet found: " + e.message);
+    }
+    
+    if (!ss) {
+        const spreadsheetId = payload.spreadsheetId;
+        if (!spreadsheetId) throw new Error("Spreadsheet ID missing in payload");
+        ss = SpreadsheetApp.openById(spreadsheetId);
+    }
+
+    // --- AUTHENTICATION BYPASS FOR LOGIN ---
+    if (action === 'login') return loginUser(ss, payload.username, payload.password);
+    
+    // --- AUTHENTICATION CHECK ---
+    if (!auth || !auth.ID) throw new Error("Authentication required. Please log in.");
+
+    let authUser = getUserById(ss, auth.ID);
+
+    // If not found in Sheets but we have auth from Firebase (auth.authProvider === 'firebase' or it has a valid Role),
+    // accept the payload auth as authoritative.
+    // This allows Firebase users to interact with the sheet mirror and upload photos.
+    if (!authUser) {
+        if (auth.Role) {
+            authUser = { ...auth, IsActive: 'true' };
+        } else {
+            throw new Error('Invalid session user. Please log in again.');
+        }
+    }
+
+    if (String(authUser.IsActive || 'true').toLowerCase() === 'false') {
+        throw new Error('Account is disabled. Contact administrator.');
+    }
+
+    // Normalize auth context from authoritative user record.
+    auth = {
+        ID: String(authUser.ID || auth.ID),
+        Username: authUser.Username || auth.Username || '',
+        Name: authUser.Name || auth.Name || '',
+        Role: authUser.Role || auth.Role || 'User',
+        DriveFolderId: authUser.DriveFolderId || auth.DriveFolderId || '',
+        ApiKeysJSON: authUser.ApiKeysJSON || auth.ApiKeysJSON || '[]'
+    };
+
+    const actions = {
+        // Data Fetching
+        'getAllData': () => getAllData(ss, auth),
+        'getAllDataAndSettings': () => getAllDataAndSettings(ss, auth),
+        // Settings
+        'saveSettings': (p) => { if (auth.Role !== 'Admin') throw new Error('Admin only.'); return saveSettingsToSheet(ss, p.settings); },
+        'saveAllSettings': (p) => { if (auth.Role !== 'Admin') throw new Error('Admin only.'); return saveSettingsToSheet(ss, p.settings); },
+        'updateMyUserConfig': (p) => updateMyUserConfig(ss, auth, p),
+        'adminUpdateUserConfig': (p) => { if (auth.Role !== 'Admin') throw new Error('Admin only.'); return adminUpdateUserConfig(ss, auth, p); },
+        // Ingredients
+        'addIngredient': (p) => addRecord(ss, sheetsConfig.ingredients, p, auth),
+        'updateIngredient': (p) => updateRecord(ss, sheetsConfig.ingredients, p, auth),
+        'deleteIngredient': (p) => deleteRecord(ss, sheetsConfig.ingredients, p.id, auth),
+        'addBatchIngredients': (p) => addBatchRecords(ss, sheetsConfig.ingredients, p.items, auth),
+        // Formulations
+        'addFormulation': (p) => addRecord(ss, sheetsConfig.formulations, p, auth),
+        'updateFormulation': (p) => updateRecord(ss, sheetsConfig.formulations, p, auth),
+        'deleteFormulation': (p) => deleteRecord(ss, sheetsConfig.formulations, p.id, auth),
+        'addBatchFormulations': (p) => addBatchRecords(ss, sheetsConfig.formulations, p.items, auth),
+        // Trials
+        'addTrial': (p) => {
+            try {
+                const parentFolderId = resolveEffectiveFolderId(ss, auth, p.folderId || payload.folderId);
+                ensureTrialFolder(ss, parentFolderId, p);
+            } catch (e) {
+                Logger.log('addTrial ensureTrialFolder error: ' + e.message);
+            }
+            return addRecord(ss, sheetsConfig.trials, p, auth);
+        },
+        'createTrialRecord': (p) => {
+            try {
+                const parentFolderId = resolveEffectiveFolderId(ss, auth, p.folderId || payload.folderId);
+                ensureTrialFolder(ss, parentFolderId, p);
+            } catch (e) {
+                Logger.log('createTrialRecord ensureTrialFolder error: ' + e.message);
+            }
+            return addRecord(ss, sheetsConfig.trials, p, auth);
+        },
+        'updateTrial': (p) => updateRecord(ss, sheetsConfig.trials, p, auth),
+        'updateTrialRecord': (p) => updateRecord(ss, sheetsConfig.trials, p, auth),
+        'updateTrialStatus': (p) => updateRecord(ss, sheetsConfig.trials, p, auth),
+        'deleteTrial': (p) => deleteRecord(ss, sheetsConfig.trials, p.id, auth),
+        'deleteTrialRecord': (p) => deleteRecord(ss, sheetsConfig.trials, p.ID || p.id, auth),
+        'addBatchTrials': (p) => {
+            try {
+                const parentFolderId = resolveEffectiveFolderId(ss, auth, p.folderId || payload.folderId);
+                if (p.items && p.items.length) {
+                    p.items.forEach(item => {
+                        try {
+                            ensureTrialFolder(ss, parentFolderId, item);
+                        } catch (inner) {
+                            Logger.log('addBatchTrials ensureTrialFolder error for one item: ' + inner.message);
+                        }
+                    });
+                }
+            } catch (e) {
+                Logger.log('addBatchTrials ensureTrialFolder outer error: ' + e.message);
+            }
+            return addBatchRecords(ss, sheetsConfig.trials, p.items, auth);
+        },
+        'updateAllTrialStatus': (p) => updateAllTrialStatus(ss, p.isLive, auth),
+        'finalizeTrial': (p) => updateRecord(ss, sheetsConfig.trials, p, auth),
+        'restartTrial': (p) => updateRecord(ss, sheetsConfig.trials, p, auth),
+        // Organisations
+        'addOrganisation': (p) => addRecord(ss, sheetsConfig.organisations, p, auth),
+        'updateOrganisation': (p) => updateRecord(ss, sheetsConfig.organisations, p, auth),
+        'deleteOrganisation': (p) => deleteRecord(ss, sheetsConfig.organisations, p.id, auth),
+        'addBatchOrganisations': (p) => addBatchRecords(ss, sheetsConfig.organisations, p.items, auth),
+                // Photos
+        'uploadPhoto': (p) => {
+            const parentFolderId = resolveEffectiveFolderId(ss, auth, p.folderId || payload.folderId);
+            return uploadPhotoToDrive(parentFolderId, p);
+        },
+                'getImageBase64': (p) => getImageBase64(p),
+        // Projects
+        'addProject': (p) => addRecord(ss, sheetsConfig.projects, p, auth),
+        'updateProject': (p) => updateRecord(ss, sheetsConfig.projects, p, auth),
+        'deleteProject': (p) => deleteRecord(ss, sheetsConfig.projects, p.id, auth),
+        // Blocks
+        'addBlock': (p) => addRecord(ss, sheetsConfig.blocks, p, auth),
+        'updateBlock': (p) => updateRecord(ss, sheetsConfig.blocks, p, auth),
+        'deleteBlock': (p) => deleteRecord(ss, sheetsConfig.blocks, p.id, auth),
+        // New Features
+        'saveLiveQrSettings': (p) => updateRecord(ss, sheetsConfig.trials, p, auth),
+        'organizeExistingPhotos': (p) => organizeExistingPhotos(ss, resolveEffectiveFolderId(ss, auth, p.folderId || payload.folderId), p),
+        'scanPhotoConsistency': (p) => scanPhotoConsistency(ss, resolveEffectiveFolderId(ss, auth, p.folderId || payload.folderId)),
+        'listTrialPhotosFromDrive': (p) => listTrialPhotosFromDrive(ss, resolveEffectiveFolderId(ss, auth, p.folderId || payload.folderId), p),
+        // Data Management
+        'clearAllData': () => clearAllData(ss, auth),
+        // ---- NEW: Offline Sync Queue Processing ----
+        'syncOfflineQueue': (p) => syncOfflineQueue(ss, p.queue, auth),
+        // ---- NEW: Knowledge Base Server-Side Search ----
+        'getTrialsByWeed': (p) => getTrialsByWeed(ss, p.weedName, p.minEfficacy, auth),
+        // ---- NEW: Fetch Project Analysis Data (Optimized) ----
+        'getProjectAnalysisData': (p) => getProjectAnalysisData(ss, p.projectId, auth),
+        // ---- NEW: Save Analysis Results ----
+        'saveAnalysisResults': (p) => {
+            const project = getRecordById(ss, sheetsConfig.projects, p.projectId);
+            if (!project) throw new Error('Project not found');
+            return updateRecord(ss, sheetsConfig.projects, { ID: p.projectId, AnalysisResultsJSON: JSON.stringify(p.results) });
+        },
+        'getTrialEmbeddings': () => getTrialEmbeddings(ss, auth),
+        'upsertTrialEmbedding': (p) => upsertTrialEmbedding(ss, p),
+        'clearTrialEmbeddings': () => clearTrialEmbeddings(ss, auth),
+        'getAllEmbeddings': () => getAllEmbeddings(ss, auth),
+        'upsertEmbedding': (p) => upsertEmbedding(ss, p),
+        'clearAllEmbeddings': () => clearAllEmbeddings(ss, auth),
+        // ---- NEW: Log Analysis Run ----
+        'logAnalysisRun': (p) => addRecord(ss, sheetsConfig.analysisLog, {
+            ProjectID: p.projectId,
+            Metric: p.metric,
+            Timestamp: new Date().toISOString(),
+            FValue: p.fValue,
+            PValue: p.pValue,
+            Significance: p.significance,
+            ResultsJSON: JSON.stringify(p.results)
+        }),
+        'getUsersList': () => { if (auth.Role !== 'Admin') throw new Error('Admin only.'); return getUsersList(ss); },
+        'adminRunUserDiagnostics': (p) => { if (auth.Role !== 'Admin') throw new Error('Admin only.'); return adminRunUserDiagnostics(ss, p); },
+        'adminExportUserData': (p) => { if (auth.Role !== 'Admin') throw new Error('Admin only.'); return adminExportUserData(ss, p); },
+        'adminImportUserData': (p) => { if (auth.Role !== 'Admin') throw new Error('Admin only.'); return adminImportUserData(ss, p); },
+        // ---- Offline Sync Conflicts ----
+        'getSyncConflicts': (p) => getSyncConflicts(ss, p, auth),
+        'saveSyncConflict': (p) => addRecord(ss, sheetsConfig.syncConflicts, p, auth),
+        'resolveSyncConflict': (p) => resolveSyncConflict(ss, p, auth),
+        // ---- Spray Logs ----
+        'getSprayLogs': (p) => getSprayLogs(ss, p, auth),
+        'addSprayLog': (p) => addRecord(ss, sheetsConfig.sprayLogs, p, auth),
+        'updateSprayLog': (p) => updateRecord(ss, sheetsConfig.sprayLogs, p, auth),
+        'deleteSprayLog': (p) => deleteRecord(ss, sheetsConfig.sprayLogs, p.id || p.ID, auth),
+        // ---- Project Conclusion / Narrative ----
+        'saveProjectConclusion': (p) => updateRecord(ss, sheetsConfig.projects, {
+            ID: p.projectId || p.ID,
+            Conclusion: p.conclusion || p.Conclusion || '',
+            Narrative: p.narrative || p.Narrative || ''
+        }, auth),
+        // ---- Dose-Response (persist fitted curve params per project/formulation) ----
+        'getDoseResponseData': (p) => getDoseResponseData(ss, p, auth),
+        'saveDoseResponseResult': (p) => saveDoseResponseResult(ss, p, auth),
+        // ---- Resistance Tracker (read computed profiles from trials) ----
+        'getResistanceData': (p) => getResistanceData(ss, p, auth),
+    };
+    if (actions[action]) {
+        return actions[action](payload);
+    } else {
+        throw new Error(`Invalid action: "${action}"`);
+    }
+}
+/* --- REPORT RENDERER (Moved from doGet) --- */
+function serveReportCard(trialId, spreadsheetId) {
+    // Try opening provided spreadsheetId first, fall back to bound spreadsheet
+    let ss;
+    try {
+        ss = SpreadsheetApp.openById(spreadsheetId);
+    } catch(e) {
+        try { ss = SpreadsheetApp.getActiveSpreadsheet(); } catch(e2) {
+            return HtmlService.createHtmlOutput('<p>Could not open spreadsheet. Check your spreadsheet ID in Settings.</p>');
+        }
+    }
+
+    let trial = getRecordById(ss, sheetsConfig.trials, trialId);
+
+    // Fallback: if not found in provided spreadsheetId, try the bound/active spreadsheet
+    if (!trial) {
+        try {
+            const activeSs = SpreadsheetApp.getActiveSpreadsheet();
+            if (!spreadsheetId || activeSs.getId() !== ss.getId()) {
+                const fallbackTrial = getRecordById(activeSs, sheetsConfig.trials, trialId);
+                if (fallbackTrial) {
+                    trial = fallbackTrial;
+                    ss = activeSs;
+                }
+            }
+        } catch(e) {}
+    }
+
+    if (!trial) return HtmlService.createHtmlOutput(`<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Not Found</title><style>body{font-family:sans-serif;text-align:center;padding:4rem 1rem;background:#f1f5f9;color:#475569}h1{color:#1e293b}.id{font-family:monospace;font-size:12px;color:#94a3b8;word-break:break-all;margin-top:1rem}</style></head><body><h1>Trial Not Found</h1><p>No trial record matched this QR code.</p><p class="id">ID: ${trialId}</p><p style="margin-top:2rem;font-size:13px">The trial may have been deleted, or this QR was generated with a different spreadsheet ID. Regenerate the QR code from the app.</p></body></html>`).setTitle('Not Found');
+    if (String(trial.IsLive).toLowerCase() === 'false') {
+        let deactivatedHtml = `<!DOCTYPE html><html lang="en"><head><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Trial Concluded</title><style>body{font-family:sans-serif;text-align:center;padding:4rem 1rem;background-color:#f1f5f9;color:#475569}h1{color:#1e293b}</style></head><body><h1>Trial Concluded</h1><p>This trial is no longer active.</p></body></html>`;
+        return HtmlService.createHtmlOutput(deactivatedHtml).setTitle('Trial Concluded');
+    }
+    let settings = {};
+    const allGlobalSettings = getSettingsFromSheet(ss);
+    const DEFAULT_QR_SETTINGS = { showInvestigator: true, showDate: true, showLocation: true, showDosage: true, showWeedSpecies: true, showResult: true, showWeather: true, showIngredients: false, showConclusion: true, showPhotos: true };
+    const globalOnlineSettings = (allGlobalSettings.qrOnlineFields && typeof allGlobalSettings.qrOnlineFields === 'object' && Object.keys(allGlobalSettings.qrOnlineFields).length > 0) ? allGlobalSettings.qrOnlineFields : DEFAULT_QR_SETTINGS;
+    try {
+        if (trial.LiveQRSettings && trial.LiveQRSettings !== "" && trial.LiveQRSettings !== "{}") {
+            const individualSettings = JSON.parse(trial.LiveQRSettings);
+            settings = { ...globalOnlineSettings, ...individualSettings };
+        } else {
+            settings = globalOnlineSettings;
+        }
+    } catch (err) {
+        settings = globalOnlineSettings;
+    }
+    const formulation = (settings.showIngredients) ? getRecordById(ss, sheetsConfig.formulations, trial.FormulationID) : null;
+    let detailsHtml = '<table>';
+    if (settings.showInvestigator) detailsHtml += `<tr><td>Investigator:</td><td>${trial.InvestigatorName || 'N/A'}</td></tr>`;
+    if (settings.showDate) detailsHtml += `<tr><td>Date:</td><td>${trial.Date ? new Date(trial.Date).toLocaleDateString() : 'N/A'}</td></tr>`;
+    if (settings.showLocation) detailsHtml += `<tr><td>Location:</td><td>${trial.Location || 'N/A'}</td></tr>`;
+    if (settings.showDosage) detailsHtml += `<tr><td>Dosage:</td><td>${trial.Dosage || 'N/A'}</td></tr>`;
+    if (settings.showWeedSpecies) detailsHtml += `<tr><td>Weed Species:</td><td>${trial.WeedSpecies || 'N/A'}</td></tr>`;
+    if (settings.showResult) detailsHtml += `<tr><td>Result:</td><td>${trial.Result || 'N/A'}</td></tr>`;
+    detailsHtml += '</table>';
+    let weatherHtml = '';
+    if (settings.showWeather) {
+        weatherHtml = `<div class="section"><h2>Weather</h2><table><tr><td>Temperature:</td><td>${trial.Temperature ? trial.Temperature + '°C' : 'N/A'}</td></tr><tr><td>Humidity:</td><td>${trial.Humidity ? trial.Humidity + '%' : 'N/A'}</td></tr><tr><td>Wind:</td><td>${trial.Windspeed ? trial.Windspeed + ' km/h' : 'N/A'}</td></tr><tr><td>Rain:</td><td>${trial.Rain ? trial.Rain + ' mm' : 'N/A'}</td></tr></table></div>`;
+    }
+    let ingredientsHtml = '';
+    if (formulation && formulation.IngredientsJSON) {
+        ingredientsHtml = `<div class="section"><h2>Formulation Ingredients</h2><ul>${JSON.parse(formulation.IngredientsJSON).map(ing => `<li>${ing.name} (${ing.quantity} ${ing.unit})</li>`).join('')}</ul></div>`;
+    }
+    let conclusionHtml = '';
+    if (settings.showConclusion) {
+        conclusionHtml = `<div class="section"><h2>Conclusion & Notes</h2><p>${trial.Conclusion || 'No conclusion provided.'}</p><p><strong>Notes:</strong> ${trial.Notes || 'No notes provided.'}</p></div>`;
+    }
+    let photosHtml = '';
+    if (settings.showPhotos && trial.PhotoURLs) {
+        try {
+            let photoArray = [];
+            const rawPhotos = trial.PhotoURLs;
+
+            if (typeof rawPhotos === 'string' && rawPhotos.trim().startsWith('[')) {
+                try { photoArray = JSON.parse(rawPhotos); } catch (e) { photoArray = []; }
+            } else if (typeof rawPhotos === 'string' && rawPhotos.trim().length > 5) {
+                photoArray = [{ url: rawPhotos.trim() }];
+            }
+
+            photoArray = (Array.isArray(photoArray) ? photoArray : []).map(item =>
+                (typeof item === 'string' ? { url: item } : (item || {}))
+            ).filter(item => item.url || item.fileData);
+
+            if (photoArray.length > 0) {
+                // Helper: extract Drive file ID from any Drive URL format
+                function getDriveFileId(url) {
+                    if (!url) return null;
+                    var m = url.match(/[?&]id=([a-zA-Z0-9_-]{10,})/);
+                    if (m) return m[1];
+                    m = url.match(/\/d\/([a-zA-Z0-9_-]{10,})/);
+                    if (m) return m[1];
+                    return null;
+                }
+
+                photosHtml = '<div class="section"><h2>Photos</h2><div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:12px;margin-top:1rem">';
+
+                photoArray.forEach(function(photo, idx) {
+                    var imgSrc = null;
+                    var linkHref = null;
+
+                    if (photo.fileData && String(photo.fileData).length > 10) {
+                        // Base64 photo — not synced to Drive yet, show click-only button
+                        photosHtml += '<a href="' + photo.fileData + '" target="_blank" style="display:flex;align-items:center;justify-content:center;background:#e2e8f0;border-radius:8px;padding:20px;text-decoration:none;color:#475569;font-size:13px;font-weight:600;border:1px solid #cbd5e1;text-align:center">📷<br>View Photo</a>';
+                        return;
+                    }
+
+                    if (photo.url) {
+                        var fileId = getDriveFileId(photo.url);
+                        linkHref = photo.url;
+                        if (fileId) {
+                            // Use thumbnail URL — works for publicly shared Drive files
+                            imgSrc = 'https://drive.google.com/thumbnail?id=' + fileId + '&sz=w400';
+                            linkHref = 'https://drive.google.com/uc?export=view&id=' + fileId;
+                        } else {
+                            imgSrc = photo.url;
+                        }
+                    }
+
+                    if (imgSrc && linkHref) {
+                        photosHtml += '<a href="' + linkHref + '" target="_blank" style="display:block;border-radius:8px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,0.12)"><img src="' + imgSrc + '" alt="Photo ' + (idx+1) + '" style="width:100%;height:140px;object-fit:cover;display:block"></a>';
+                    }
+                });
+
+                photosHtml += '</div></div>';
+            }
+        } catch (e) {
+            photosHtml = '<div class="section"><h2>Photos</h2><p style="color:#666">Error: ' + e.message + '</p></div>';
+        }
+    }
+    let html = `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Trial Details</title><style>body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Oxygen-sans,Ubuntu,Cantarell,"Helvetica Neue",sans-serif;margin:0;padding:1.5rem;background-color:#f7fafc;color:#2d3748;font-size:16px;line-height:1.5}.container{max-width:600px;margin:auto;background-color:#fff;padding:1.5rem;border-radius:8px;box-shadow:0 4px 6px rgba(0,0,0,.1)}h1,h2{color:#2c5282;border-bottom:2px solid #e2e8f0;padding-bottom:.5rem;margin-top:0}.section{margin-top:1.5rem;padding-top:1.5rem;border-top:1px solid #e2e8f0}table{width:100%;border-collapse:collapse}td{padding:.5rem 0;vertical-align:top;word-break:break-word}td:first-child{width:120px;font-weight:700;color:#718096}.photo-gallery{display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:10px;margin-top:1rem}.photo-gallery img{width:100%;height:auto;border-radius:4px;box-shadow:0 2px 4px rgba(0,0,0,.1)}</style></head><body><div class="container"><h1>${trial.FormulationName || 'Trial Report'}</h1>${detailsHtml}${weatherHtml}${ingredientsHtml}${conclusionHtml}${photosHtml}</div></body></html>`;
+    return HtmlService.createHtmlOutput(html).setTitle(`Trial: ${trial.FormulationName}`);
+}
+/* --- CORE FUNCTIONS (Unchanged from original) --- */
+function getAllData(ss, auth) {
+    const adminUser = sheetToJSON(getSheet(ss, sheetsConfig.users)).find(u => u.Role === 'Admin');
+    const adminId = adminUser ? String(adminUser.ID) : '';
+
+    const filterFn = auth && auth.Role !== 'Admin' ? (row) => {
+        const creator = String(row.CreatedBy || '').trim() || adminId;
+        return creator === String(auth.ID);
+    } : null;
+
+    return {
+        ingredients: sheetToJSON(getSheet(ss, sheetsConfig.ingredients), filterFn),
+        formulations: sheetToJSON(getSheet(ss, sheetsConfig.formulations), filterFn),
+        trials: sheetToJSON(getSheet(ss, sheetsConfig.trials), filterFn),
+        organisations: sheetToJSON(getSheet(ss, sheetsConfig.organisations), filterFn),
+        projects: sheetToJSON(getSheet(ss, sheetsConfig.projects), filterFn),
+        blocks: sheetToJSON(getSheet(ss, sheetsConfig.blocks), filterFn)
+    };
+}
+function getAllDataAndSettings(ss, auth) {
+    return {
+        data: getAllData(ss, auth),
+        settings: getSettingsFromSheet(ss)
+    };
+}
+function addRecord(ss, sheetName, payload, auth) {
+    const sheet = getSheet(ss, sheetName);
+    const headers = getHeaders(sheet);
+    const row = [];
+    if (!payload.ID) payload.ID = Utilities.getUuid();
+    
+    // Admin View Attribution: If Admin is creating on behalf of someone else, use that ID
+    if (auth && auth.Role === 'Admin' && payload.OnBehalfOf) {
+        payload.CreatedBy = payload.OnBehalfOf;
+    } else if (auth && auth.ID) {
+        payload.CreatedBy = auth.ID;
+    }
+    
+    headers.forEach(header => {
+        row.push(payload[header] || '');
+    });
+    
+    // Insert at Row 2 (under headers) instead of appending
+    sheet.insertRowAfter(1);
+    sheet.getRange(2, 1, 1, row.length).setValues([row]);
+    
+    SpreadsheetApp.flush();
+    return payload;
+}
+function updateRecord(ss, sheetName, payload, auth) {
+    const sheet = getSheet(ss, sheetName);
+    const id = payload.ID || payload.id;
+    const rowIndex = findRowById(sheet, id);
+    if (rowIndex === -1) throw new Error(`Record with ID ${id} not found in ${sheetName}`);
+    const headers = getHeaders(sheet);
+    const range = sheet.getRange(rowIndex, 1, 1, headers.length);
+    const minValues = range.getValues()[0];
+    
+    // Auth Check
+    const ownerColIdx = headers.indexOf('CreatedBy');
+    if (auth && auth.Role !== 'Admin' && ownerColIdx !== -1 && String(minValues[ownerColIdx] || '') !== String(auth.ID)) throw new Error("Access Denied.");
+    headers.forEach((header, i) => {
+        if (payload[header] !== undefined) {
+            minValues[i] = payload[header];
+        }
+    });
+    range.setValues([minValues]);
+    SpreadsheetApp.flush();
+    return getRecordById(ss, sheetName, id);
+}
+function deleteRecord(ss, sheetName, id, auth) {
+    const sheet = getSheet(ss, sheetName);
+    const rowIndex = findRowById(sheet, id);
+    if (rowIndex === -1) throw new Error("Record not found to delete.");
+    // Auth Check
+    const headers = getHeaders(sheet);
+    const ownerColIdx = headers.indexOf('CreatedBy');
+    if (auth && auth.Role !== 'Admin' && ownerColIdx !== -1) {
+        const ownerId = sheet.getRange(rowIndex, ownerColIdx + 1).getValue();
+        if (String(ownerId || '') !== String(auth.ID)) throw new Error("Access Denied.");
+    }
+    sheet.deleteRow(rowIndex);
+    return { success: true, id: id };
+}
+function addBatchRecords(ss, sheetName, items, auth) {
+    if (!items || !items.length) return { success: true, count: 0 };
+    const sheet = getSheet(ss, sheetName);
+    const headers = getHeaders(sheet);
+    const rows = items.map(item => {
+        if (!item.ID) item.ID = Utilities.getUuid();
+        if (auth && auth.ID) item.CreatedBy = auth.ID;
+        return headers.map(h => item[h] || '');
+    });
+    // Insert multiple rows at once at the top
+    sheet.insertRowsAfter(1, rows.length);
+    sheet.getRange(2, 1, rows.length, headers.length).setValues(rows);
+    return { success: true, count: rows.length };
+}
+
+/**
+ * Ensure that a hierarchical Drive folder exists for a trial.
+ * Structure: Root (folderId) / ProjectName / "FormulationName (YYYY-MM-DD)"
+ */
+function ensureTrialFolder(ss, parentFolderId, trialPayload) {
+    try {
+        if (!parentFolderId || !trialPayload) return null;
+
+        const rootFolder = DriveApp.getFolderById(parentFolderId);
+
+        // Determine Project Name
+        let projectName = 'Ungrouped Projects';
+        const projectId = trialPayload.ProjectID || trialPayload.projectId || trialPayload.projectID;
+        if (projectId) {
+            try {
+                const project = getRecordById(ss, sheetsConfig.projects, projectId);
+                if (project && project.Name) {
+                    projectName = project.Name;
+                }
+            } catch (e) {
+                Logger.log('ensureTrialFolder project lookup error: ' + e.message);
+            }
+        }
+
+        // Determine Trial Folder Name
+        const formulationName = trialPayload.FormulationName || trialPayload.formulationName || 'Unknown Formulation';
+        const rawDate = trialPayload.Date || trialPayload.date || new Date();
+        const dateObj = rawDate instanceof Date ? rawDate : new Date(rawDate);
+        const dateStr = isNaN(dateObj.getTime()) ? new Date().toISOString().split('T')[0] : dateObj.toISOString().split('T')[0];
+        const trialFolderName = (formulationName + ' (' + dateStr + ')').trim();
+
+        const folderPath = [projectName, trialFolderName];
+
+        let targetFolder = rootFolder;
+        folderPath.forEach(name => {
+            if (!name) return;
+            const subfolders = targetFolder.getFoldersByName(name);
+            if (subfolders.hasNext()) {
+                targetFolder = subfolders.next();
+            } else {
+                targetFolder = targetFolder.createFolder(name);
+            }
+        });
+
+        return targetFolder.getId();
+    } catch (error) {
+        Logger.log('ensureTrialFolder error: ' + error.message);
+        return null;
+    }
+}
+function uploadPhotoToDrive(parentFolderId, payload) {
+    if (!parentFolderId) throw new Error("Parent Folder ID missing.");
+    const { fileData, fileName, mimeType, folderPath } = payload;
+    
+    Logger.log(`=== UPLOAD PHOTO DEBUG ===`);
+    Logger.log(`Targeting Root Folder ID: ${parentFolderId}`);
+    Logger.log(`Hierarchy Path: ${JSON.stringify(folderPath)}`);
+    Logger.log(`File Name: ${fileName}`);
+    Logger.log(`MIME Type: ${mimeType}`);
+
+    let targetFolder;
+    try {
+        targetFolder = DriveApp.getFolderById(parentFolderId);
+        Logger.log(`Successfully accessed folder: ${targetFolder.getName()}`);
+    } catch (e) {
+        Logger.log(`ERROR accessing folder ID: ${parentFolderId}`);
+        Logger.log(`Error details: ${e.message}`);
+        Logger.log(`Error stack: ${e.stack}`);
+        
+        // Try to get root folder to test if Drive API is working at all
+        try {
+            const rootFolder = DriveApp.getRootFolder();
+            Logger.log(`Drive API is working - can access root folder: ${rootFolder.getName()}`);
+        } catch (rootErr) {
+            Logger.log(`CRITICAL: Cannot even access root folder. Drive API permissions issue: ${rootErr.message}`);
+        }
+        
+        throw new Error(`Drive access denied for folder ID: ${parentFolderId}. Error: ${e.message}. Check that this folder exists and you have edit access to it.`);
+    }
+    
+    // Create/retrieve nested subfolders if requested
+    if (folderPath && Array.isArray(folderPath)) {
+        folderPath.forEach(name => {
+            if (!name) return;
+            const subfolders = targetFolder.getFoldersByName(name);
+            if (subfolders.hasNext()) {
+                targetFolder = subfolders.next();
+                Logger.log(`Existing folder found: ${name}`);
+            } else {
+                targetFolder = targetFolder.createFolder(name);
+                Logger.log(`New folder created: ${name}`);
+            }
+        });
+    }
+
+    const validBase64 = fileData.includes('base64,') ? fileData.split('base64,')[1] : fileData;
+    const blob = Utilities.newBlob(Utilities.base64Decode(validBase64), mimeType, fileName);
+    const file = targetFolder.createFile(blob);
+    let publicShared = true;
+    try {
+        file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+    } catch (shareErr) {
+        // Some domains block public sharing. Keep upload successful and return a non-public Drive URL.
+        publicShared = false;
+        Logger.log(`setSharing blocked for ${fileName}: ${shareErr.message}`);
+    }
+    
+    Logger.log(`Saved file "${fileName}" to folder: ${targetFolder.getName()}`);
+
+    return {
+        url: publicShared
+            ? `https://drive.google.com/uc?export=view&id=${file.getId()}`
+            : `https://drive.google.com/file/d/${file.getId()}/view`,
+        id: file.getId(),
+        name: fileName,
+        folderName: targetFolder.getName(),
+        publicShared: publicShared
+    };
+}
+
+function getTrialFolderPath(ss, trialPayload) {
+    if (!trialPayload) throw new Error('Trial payload missing.');
+
+    let projectName = 'Ungrouped Projects';
+    const projectId = trialPayload.ProjectID || trialPayload.projectId || trialPayload.projectID;
+    if (projectId) {
+        try {
+            const project = getRecordById(ss, sheetsConfig.projects, projectId);
+            if (project && project.Name) {
+                projectName = project.Name;
+            }
+        } catch (e) {
+            Logger.log('getTrialFolderPath project lookup error: ' + e.message);
+        }
+    }
+
+    const formulationName = trialPayload.FormulationName || trialPayload.formulationName || 'Unknown Formulation';
+    const rawDate = trialPayload.Date || trialPayload.date || new Date();
+    const dateObj = rawDate instanceof Date ? rawDate : new Date(rawDate);
+    const dateStr = isNaN(dateObj.getTime()) ? new Date().toISOString().split('T')[0] : dateObj.toISOString().split('T')[0];
+    const dosage = trialPayload.Dosage || trialPayload.dosage || '';
+    const dosageSuffix = dosage ? ' (' + dosage + ')' : '';
+    const trialFolderName = (formulationName + dosageSuffix + ' (' + dateStr + ')').trim();
+
+    return [projectName, trialFolderName];
+}
+
+function findNestedFolder(rootFolder, folderPath) {
+    let currentFolder = rootFolder;
+    for (let i = 0; i < folderPath.length; i++) {
+        const folderName = folderPath[i];
+        if (!folderName) continue;
+
+        const matches = currentFolder.getFoldersByName(folderName);
+        if (!matches.hasNext()) {
+            return null;
+        }
+        currentFolder = matches.next();
+    }
+    return currentFolder;
+}
+
+function listFilesInFolderRecursive(folder, collector) {
+    const files = folder.getFiles();
+    while (files.hasNext()) {
+        const file = files.next();
+        collector.push({
+            id: file.getId(),
+            name: file.getName(),
+            mimeType: file.getMimeType(),
+            url: `https://drive.google.com/uc?export=view&id=${file.getId()}`,
+            webViewLink: file.getUrl(),
+            folderName: folder.getName(),
+            createdTime: file.getDateCreated() ? file.getDateCreated().toISOString() : '',
+            updatedTime: file.getLastUpdated() ? file.getLastUpdated().toISOString() : ''
+        });
+    }
+
+    const childFolders = folder.getFolders();
+    while (childFolders.hasNext()) {
+        listFilesInFolderRecursive(childFolders.next(), collector);
+    }
+}
+
+function listTrialPhotosFromDrive(ss, parentFolderId, payload = {}) {
+    if (!parentFolderId) throw new Error('Parent Folder ID missing.');
+
+    const trialId = payload.trialId || payload.ID || payload.id;
+    if (!trialId) throw new Error('Trial ID is required.');
+
+    const trial = getRecordById(ss, sheetsConfig.trials, trialId);
+    if (!trial) throw new Error('Trial not found.');
+
+    const rootFolder = DriveApp.getFolderById(parentFolderId);
+    const folderPath = getTrialFolderPath(ss, trial);
+    const trialFolder = findNestedFolder(rootFolder, folderPath);
+
+    if (!trialFolder) {
+        return {
+            success: true,
+            photos: [],
+            folderPath: folderPath,
+            message: 'Trial folder not found in Drive.'
+        };
+    }
+
+    const allFiles = [];
+    listFilesInFolderRecursive(trialFolder, allFiles);
+
+    const imageMimePrefixes = ['image/'];
+    const imageExtensionRegex = /\.(jpg|jpeg|png|gif|webp|bmp|heic|heif|tif|tiff)$/i;
+    const photos = allFiles.filter(file => {
+        const mimeType = String(file.mimeType || '').toLowerCase();
+        const fileName = String(file.name || '');
+        return imageMimePrefixes.some(prefix => mimeType.indexOf(prefix) === 0) || imageExtensionRegex.test(fileName);
+    });
+
+    return {
+        success: true,
+        photos: photos,
+        folderId: trialFolder.getId(),
+        folderName: trialFolder.getName(),
+        folderPath: folderPath
+    };
+}
+
+function getSheet(ss, sheetName) {
+    let sheet = ss.getSheetByName(sheetName);
+    const defaults = {
+        [sheetsConfig.trials]: ['ID', 'CreatedBy', 'InvestigatorName', 'FormulationID', 'FormulationName', 'Date', 'Location', 'Dosage', 'WeedSpecies', 'Result', 'Temperature', 'Humidity', 'Windspeed', 'Rain', 'Conclusion', 'Notes', 'PhotoURLs', 'WeedPhotosJSON', 'ControlFinalized', 'FinalizationDate', 'FinalControlDuration', 'IsCompleted', 'IsLive', 'LiveQRSettings', 'ProjectID', 'BlockID', 'IsControl', 'IsStandardCheck', 'EfficacyDataJSON', 'AISummariesJSON', 'Replication', 'PlotNumber', 'RandomizationOrder', 'TreatmentNumber', 'StatisticsJSON', 'Yield', 'YieldValue', 'SpectralDataJSON', 'BiomassDataJSON', 'Lat', 'Lon', 'WeatherJSON', 'VegetationIndex', 'PlantHealthIndex', 'SoilDataJSON', 'SoilPH', 'SoilClay', 'SoilSand', 'SoilOC', 'SoilTexture', 'PlotMapJSON', 'ResistanceFlag', 'DoseResponseJSON'],
+        [sheetsConfig.formulations]: ['ID', 'CreatedBy', 'Name', 'Notes', 'IngredientsJSON', 'EstimatedCost'],
+        [sheetsConfig.ingredients]: ['ID', 'CreatedBy', 'Name', 'Cost', 'Unit'],
+        [sheetsConfig.organisations]: ['ID', 'CreatedBy', 'Name', 'TrialIDs'],
+        [sheetsConfig.projects]: ['ID', 'CreatedBy', 'Name', 'Status', 'Metric', 'CreatedAt', 'Notes', 'ProtocolJSON', 'ReportSettingsJSON', 'AnalysisResultsJSON', 'Location', 'Investigator', 'StartDate', 'Design', 'Narrative', 'Conclusion', 'GPSBoundsJSON', 'PlotLayoutJSON', 'DoseResponseResultsJSON'],
+        [sheetsConfig.blocks]: ['ID', 'CreatedBy', 'ProjectID', 'Name', 'ReplicationNum', 'RandomizationOrder'],
+        [sheetsConfig.users]: ['ID', 'Username', 'Password', 'Name', 'Role', 'DriveFolderId', 'ApiKeysJSON', 'IsActive', 'CreatedAt', 'UpdatedAt'],
+        [sheetsConfig.settings]: ['key', 'value'],
+        [sheetsConfig.analysisLog]: ['ID', 'CreatedBy', 'ProjectID', 'Metric', 'Timestamp', 'FValue', 'PValue', 'Significance', 'ResultsJSON'],
+        [sheetsConfig.embeddings]: ['ID', 'CreatedBy', 'TrialID', 'Model', 'Dims', 'VectorB64', 'TextHash', 'UpdatedAt'],
+        [sheetsConfig.embeddingsAll]: ['ID', 'CreatedBy', 'ItemType', 'ItemID', 'Title', 'Model', 'Dims', 'VectorB64', 'TextHash', 'UpdatedAt'],
+        [sheetsConfig.syncConflicts]: ['ID', 'CreatedBy', 'EntityType', 'EntityID', 'LocalDataJSON', 'ServerDataJSON', 'DetectedAt', 'Resolved', 'Resolution', 'ResolvedAt', 'MergedDataJSON'],
+        [sheetsConfig.sprayLogs]: ['ID', 'CreatedBy', 'ProjectID', 'TrialID', 'Date', 'Operator', 'FormulationName', 'Dosage', 'WaterVolume', 'NozzleType', 'SprayPressure', 'BoomWidth', 'ApplicationMethod', 'StartTime', 'EndTime', 'AreaTreated', 'Temperature', 'Humidity', 'Windspeed', 'WindDirection', 'DeltaT', 'Notes', 'REIDays', 'PHIDays', 'BatchNumber', 'EquipmentID']
+    };
+
+    if (!sheet) {
+        sheet = ss.insertSheet(sheetName);
+        if (defaults[sheetName]) sheet.appendRow(defaults[sheetName]);
+        if (sheetName === sheetsConfig.users) {
+            sheet.appendRow([
+                Utilities.getUuid(),
+                'admin',
+                'admin123',
+                'System Administrator',
+                'Admin',
+                '',
+                '[]',
+                'true',
+                new Date().toISOString(),
+                new Date().toISOString()
+            ]);
+        }
+    } else {
+        // RESILIENCE: Check for and add missing columns
+        if (defaults[sheetName]) {
+            syncHeaders(sheet, defaults[sheetName]);
+        }
+    }
+    return sheet;
+}
+
+function syncHeaders(sheet, expectedHeaders) {
+    const existingHeaders = getHeaders(sheet);
+    const missingHeaders = expectedHeaders.filter(h => !existingHeaders.includes(h));
+    
+    if (missingHeaders.length > 0) {
+        const lastCol = sheet.getLastColumn();
+        const startCol = lastCol + 1;
+        sheet.getRange(1, startCol, 1, missingHeaders.length).setValues([missingHeaders]);
+        SpreadsheetApp.flush();
+        Logger.log(`Added missing headers to ${sheet.getName()}: ${missingHeaders.join(', ')}`);
+    }
+}
+function getHeaders(sheet) {
+    if (sheet.getLastRow() < 1) return [];
+    return sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+}
+function findRowById(sheet, id) {
+    if (!id) return -1;
+    const finder = sheet.getRange("A:A").createTextFinder(String(id)).matchEntireCell(true);
+    const result = finder.findNext();
+    return result ? result.getRow() : -1;
+}
+function getRecordById(ss, sheetName, id) {
+    const sheet = getSheet(ss, sheetName);
+    const rowIndex = findRowById(sheet, id);
+    if (rowIndex === -1) return null;
+    const headers = getHeaders(sheet);
+    const values = sheet.getRange(rowIndex, 1, 1, headers.length).getValues()[0];
+    const record = {};
+    headers.forEach((h, i) => record[h] = values[i]);
+    return record;
+}
+function sheetToJSON(sheet, filterFn = null) {
+    const data = sheet.getDataRange().getValues();
+    if (data.length < 2) return [];
+    const headers = data.shift();
+    
+    let jsonData = data.map(row => {
+        const obj = {};
+        headers.forEach((h, i) => obj[h] = row[i]);
+        return obj;
+    });
+
+    if (filterFn) {
+        jsonData = jsonData.filter(filterFn);
+    }
+    
+    return jsonData;
+}
+function getSettingsFromSheet(ss) {
+    let sheet = ss.getSheetByName(sheetsConfig.settings);
+    if (!sheet) return {};
+    if (sheet.getLastRow() < 2) return {};
+    const data = sheet.getDataRange().getValues().slice(1);
+    const settings = {};
+    data.forEach(row => {
+        try { settings[row[0]] = JSON.parse(row[1]); }
+        catch (e) { settings[row[0]] = row[1]; }
+    });
+    return settings;
+}
+function saveSettingsToSheet(ss, settings) {
+    let sheet = ss.getSheetByName(sheetsConfig.settings);
+    if (!sheet) { sheet = ss.insertSheet(sheetsConfig.settings); sheet.appendRow(['key', 'value']); }
+    sheet.clearContents();
+    sheet.appendRow(['key', 'value']);
+    const rows = Object.keys(settings).map(k => [k, typeof settings[k] === 'object' ? JSON.stringify(settings[k]) : settings[k]]);
+    if (rows.length) sheet.getRange(2, 1, rows.length, 2).setValues(rows);
+    return { success: true };
+}
+function clearAllData(ss, auth) {
+    if (auth && auth.Role !== 'Admin') throw new Error('Admin only.');
+    const sheetsToClear = [
+        sheetsConfig.trials,
+        sheetsConfig.formulations,
+        sheetsConfig.ingredients,
+        sheetsConfig.organisations,
+        sheetsConfig.projects,
+        sheetsConfig.blocks,
+        sheetsConfig.embeddings,
+        sheetsConfig.embeddingsAll
+    ];
+    sheetsToClear.forEach(name => {
+        const sheet = getSheet(ss, name);
+        const lastRow = sheet.getLastRow();
+        const lastCol = sheet.getLastColumn();
+        if (lastRow > 1 && lastCol > 0) {
+            sheet.getRange(2, 1, lastRow - 1, lastCol).clearContent();
+        }
+    });
+    SpreadsheetApp.flush();
+    return { success: true };
+}
+
+function getTrialEmbeddings(ss, auth) {
+    const sheet = getSheet(ss, sheetsConfig.embeddings);
+    return sheetToJSON(sheet);
+}
+
+function getAllEmbeddings(ss, auth) {
+    const sheet = getSheet(ss, sheetsConfig.embeddingsAll);
+    return sheetToJSON(sheet);
+}
+
+function upsertTrialEmbedding(ss, payload) {
+    const sheet = getSheet(ss, sheetsConfig.embeddings);
+    const headers = getHeaders(sheet);
+
+    const trialId = payload.TrialID || payload.trialId;
+    if (!trialId) throw new Error('TrialID is required');
+
+    const values = sheet.getDataRange().getValues();
+    const headerRow = values[0] || [];
+    const trialIdCol = headerRow.indexOf('TrialID');
+    if (trialIdCol === -1) throw new Error('Embeddings sheet missing TrialID column');
+
+    let existingRowIndex = -1;
+    for (let r = 1; r < values.length; r++) {
+        const rowTrialId = String(values[r][trialIdCol] || '');
+        if (rowTrialId === String(trialId)) {
+            existingRowIndex = r + 1;
+            break;
+        }
+    }
+
+    const record = {
+        ID: payload.ID || (existingRowIndex === -1 ? Utilities.getUuid() : sheet.getRange(existingRowIndex, 1).getValue()),
+        TrialID: String(trialId),
+        Model: payload.Model || payload.model || '',
+        Dims: payload.Dims || payload.dims || '',
+        VectorB64: payload.VectorB64 || payload.vectorB64 || '',
+        TextHash: payload.TextHash || payload.textHash || '',
+        UpdatedAt: payload.UpdatedAt || payload.updatedAt || new Date().toISOString()
+    };
+
+    const row = headers.map(h => record[h] || '');
+
+    if (existingRowIndex === -1) {
+        sheet.insertRowAfter(1);
+        sheet.getRange(2, 1, 1, row.length).setValues([row]);
+    } else {
+        sheet.getRange(existingRowIndex, 1, 1, row.length).setValues([row]);
+    }
+
+    SpreadsheetApp.flush();
+    return { success: true, TrialID: record.TrialID };
+}
+
+function clearTrialEmbeddings(ss, auth) {
+    const sheet = getSheet(ss, sheetsConfig.embeddings);
+    const lastRow = sheet.getLastRow();
+    const lastCol = sheet.getLastColumn();
+    if (lastRow > 1 && lastCol > 0) {
+        sheet.getRange(2, 1, lastRow - 1, lastCol).clearContent();
+    }
+    SpreadsheetApp.flush();
+    return { success: true };
+}
+
+function upsertEmbedding(ss, payload) {
+    const sheet = getSheet(ss, sheetsConfig.embeddingsAll);
+    const headers = getHeaders(sheet);
+
+    const itemType = String(payload.ItemType || payload.itemType || '').trim();
+    const itemId = String(payload.ItemID || payload.itemId || '').trim();
+    if (!itemType || !itemId) throw new Error('ItemType and ItemID are required');
+
+    const values = sheet.getDataRange().getValues();
+    const headerRow = values[0] || [];
+    const itemTypeCol = headerRow.indexOf('ItemType');
+    const itemIdCol = headerRow.indexOf('ItemID');
+    if (itemTypeCol === -1 || itemIdCol === -1) throw new Error('EmbeddingsAll sheet missing ItemType/ItemID columns');
+
+    let existingRowIndex = -1;
+    for (let r = 1; r < values.length; r++) {
+        const rowType = String(values[r][itemTypeCol] || '');
+        const rowId = String(values[r][itemIdCol] || '');
+        if (rowType === itemType && rowId === itemId) {
+            existingRowIndex = r + 1;
+            break;
+        }
+    }
+
+    const record = {
+        ID: payload.ID || (existingRowIndex === -1 ? Utilities.getUuid() : sheet.getRange(existingRowIndex, 1).getValue()),
+        ItemType: itemType,
+        ItemID: itemId,
+        Title: payload.Title || payload.title || '',
+        Model: payload.Model || payload.model || '',
+        Dims: payload.Dims || payload.dims || '',
+        VectorB64: payload.VectorB64 || payload.vectorB64 || '',
+        TextHash: payload.TextHash || payload.textHash || '',
+        UpdatedAt: payload.UpdatedAt || payload.updatedAt || new Date().toISOString()
+    };
+
+    const row = headers.map(h => record[h] || '');
+    if (existingRowIndex === -1) {
+        sheet.insertRowAfter(1);
+        sheet.getRange(2, 1, 1, row.length).setValues([row]);
+    } else {
+        sheet.getRange(existingRowIndex, 1, 1, row.length).setValues([row]);
+    }
+
+    SpreadsheetApp.flush();
+    return { success: true, ItemType: record.ItemType, ItemID: record.ItemID };
+}
+
+function clearAllEmbeddings(ss, auth) {
+    const sheet = getSheet(ss, sheetsConfig.embeddingsAll);
+    const lastRow = sheet.getLastRow();
+    const lastCol = sheet.getLastColumn();
+    if (lastRow > 1 && lastCol > 0) {
+        sheet.getRange(2, 1, lastRow - 1, lastCol).clearContent();
+    }
+    SpreadsheetApp.flush();
+    return { success: true };
+}
+
+function sendResponse(data) {
+    return ContentService.createTextOutput(JSON.stringify(data)).setMimeType(ContentService.MimeType.JSON);
+}
+function updateAllTrialStatus(ss, isLive, auth) {
+    const sheet = getSheet(ss, sheetsConfig.trials);
+    const headers = getHeaders(sheet);
+    const isLiveColIndex = headers.indexOf('IsLive') + 1;
+    if (isLiveColIndex > 0 && sheet.getLastRow() > 1) {
+        const numRows = Math.max(1, sheet.getLastRow() - 1);
+        const range = sheet.getRange(2, isLiveColIndex, numRows, 1);
+        range.setValue(isLive);
+        SpreadsheetApp.flush();
+        return { success: true, updatedAll: true };
+    }
+    return { success: false, message: 'IsLive column not found or no data.' };
+}
+
+// ========================================
+// OFFLINE SYNC QUEUE PROCESSOR
+// ========================================
+/**
+ * Processes an array of queued offline actions.
+ * Each item in the queue is { action, payload }.
+ * Returns an array of results with success/error for each.
+ */
+function syncOfflineQueue(ss, queue, auth) {
+    if (!queue || !Array.isArray(queue) || queue.length === 0) {
+        return { success: true, processed: 0, results: [] };
+    }
+
+    const results = [];
+    let successCount = 0;
+    let errorCount = 0;
+
+    for (const item of queue) {
+        try {
+            const { action, payload } = item;
+            if (!action) throw new Error('Missing action in queue item');
+            
+            // Re-use the executeAction router for each queued item
+            // But we need to pass spreadsheetId through
+            const wrappedPayload = { ...payload, spreadsheetId: payload.spreadsheetId };
+            const result = executeAction(action, wrappedPayload, auth);
+            results.push({ id: item.id || null, success: true, data: result });
+            successCount++;
+        } catch (e) {
+            Logger.log('syncOfflineQueue item error: ' + e.message);
+            results.push({ id: item.id || null, success: false, error: e.message });
+            errorCount++;
+        }
+    }
+
+    return { success: true, processed: queue.length, successCount, errorCount, results };
+}
+
+// ========================================
+// KNOWLEDGE BASE SERVER-SIDE SEARCH
+// ========================================
+/**
+ * Search trials by weed species name and minimum efficacy threshold.
+ * Returns top matching formulations with efficacy data.
+ */
+function getTrialsByWeed(ss, weedName, minEfficacy, auth) {
+    if (!weedName) throw new Error('Weed name is required');
+    const minEff = parseFloat(minEfficacy) || 80;
+    const weedLower = weedName.toLowerCase();
+
+    const trials = sheetToJSON(getSheet(ss, sheetsConfig.trials));
+    const matches = [];
+
+    trials.forEach(trial => {
+        const trialWeeds = (trial.WeedSpecies || '').toLowerCase();
+        if (!trialWeeds.includes(weedLower)) return;
+
+        const efficacyData = safeJsonParse(trial.EfficacyDataJSON);
+        if (efficacyData.length === 0) return;
+
+        // Get latest observation
+        efficacyData.sort((a, b) => (b.daa || 0) - (a.daa || 0));
+        const lastObs = efficacyData[0];
+        const weedDetails = lastObs.weedDetails || [];
+
+        let coverPct = 0;
+        const matchingWeed = weedDetails.find(w =>
+            (w.species || '').toLowerCase().includes(weedLower)
+        );
+
+        if (matchingWeed) {
+            coverPct = parseFloat(matchingWeed.cover || 0);
+        } else {
+            coverPct = weedDetails.reduce((sum, w) => sum + parseFloat(w.cover || 0), 0);
+        }
+
+        const efficacy = 100 - coverPct;
+
+        if (efficacy >= minEff) {
+            matches.push({
+                formulationName: trial.FormulationName,
+                formulationId: trial.FormulationID,
+                efficacy: efficacy.toFixed(1),
+                dosage: trial.Dosage || 'N/A',
+                date: trial.Date,
+                daa: lastObs.daa,
+                trialId: trial.ID,
+                investigator: trial.InvestigatorName || 'Unknown',
+                result: trial.Result || 'N/A',
+                weedSpecies: trial.WeedSpecies
+            });
+        }
+    });
+
+    // Sort by efficacy descending
+    matches.sort((a, b) => parseFloat(b.efficacy) - parseFloat(a.efficacy));
+
+    return { success: true, matches: matches.slice(0, 10), total: matches.length };
+}
+
+// ========================================
+// PROJECT ANALYSIS DATA (Optimized for ANOVA)
+// ========================================
+/**
+ * Returns structured data for a project's statistical analysis.
+ * Precomputes treatment groups and observation data server-side
+ * to minimize data transfer.
+ */
+function getProjectAnalysisData(ss, projectId, auth) {
+    if (!projectId) throw new Error('Project ID is required');
+
+    const project = getRecordById(ss, sheetsConfig.projects, projectId);
+    if (!project) throw new Error('Project not found');
+
+    const allTrials = sheetToJSON(getSheet(ss, sheetsConfig.trials));
+    const projectTrials = allTrials.filter(t => String(t.ProjectID) === String(projectId));
+    const blocks = sheetToJSON(getSheet(ss, sheetsConfig.blocks)).filter(b => String(b.ProjectID) === String(projectId));
+    
+    const treatments = [...new Set(projectTrials.map(t => t.FormulationName))].filter(Boolean);
+
+    // Build data matrix per treatment
+    const dataMatrix = {};
+    treatments.forEach(trt => {
+        const reps = projectTrials.filter(t => t.FormulationName === trt);
+        dataMatrix[trt] = reps.map(r => {
+            const eff = safeJsonParse(r.EfficacyDataJSON);
+            const yieldVal = parseFloat(r.Yield || 0);
+            let latestCover = 0;
+            let latestPhyto = 0;
+            let latestDAA = 0;
+
+            if (eff.length > 0) {
+                eff.sort((a, b) => (b.daa || 0) - (a.daa || 0));
+                const lastObs = eff[0];
+                latestDAA = lastObs.daa || 0;
+                latestPhyto = parseFloat(lastObs.phyto || 0);
+                latestCover = (lastObs.weedDetails || []).reduce((s, w) => s + parseFloat(w.cover || 0), 0);
+            }
+
+            return {
+                trialId: r.ID,
+                blockId: r.BlockID,
+                replication: r.Replication,
+                yield: yieldVal,
+                cover: latestCover,
+                phyto: latestPhyto,
+                daa: latestDAA,
+                isControl: String(r.IsControl).toLowerCase() === 'true'
+            };
+        });
+    });
+
+    return {
+        success: true,
+        project: {
+            id: project.ID,
+            name: project.Name,
+            metric: project.Metric,
+            conclusion: project.Conclusion || '',
+            narrative: project.Narrative || '',
+            doseResponseResultsJSON: project.DoseResponseResultsJSON || null
+        },
+        treatments,
+        blocks: blocks.map(b => ({ id: b.ID, name: b.Name, repNum: b.ReplicationNum })),
+        dataMatrix,
+        existingResults: project.AnalysisResultsJSON || null
+    };
+}
+
+/**
+ * MANUAL SYNC: Run this function from the Apps Script editor to force-sync 
+ * all sheet headers (adds missing columns like Yield, SpectralDataJSON, etc.)
+ * You MUST replace 'YOUR_SPREADSHEET_ID' below with your actual spreadsheet ID.
+ */
+function runManualSync() {
+    // ✅ REPLACE THIS with your actual spreadsheet ID from the URL
+    const spreadsheetId = SpreadsheetApp.getActiveSpreadsheet().getId();
+    const ss = SpreadsheetApp.openById(spreadsheetId);
+    
+    // getSheet() automatically calls syncHeaders() for each sheet
+    const sheetNames = Object.values(sheetsConfig);
+    sheetNames.forEach(name => {
+        try {
+            const sheet = getSheet(ss, name);
+            Logger.log('✅ Synced: ' + name + ' (' + getHeaders(sheet).length + ' columns)');
+        } catch (e) {
+            Logger.log('⚠️ Error syncing ' + name + ': ' + e.message);
+        }
+    });
+    
+    Logger.log('🎉 All sheets synced successfully!');
+}
+
+/**
+ * TRIGGER PERMISSIONS: Run this function once manually in the Apps Script editor 
+ * to trigger the authorization dialog for Google Drive access.
+ */
+function triggerDrivePermissions() {
+  const folder = DriveApp.getRootFolder();
+  const testFile = folder.createFile("test_permission_file.txt", "This is a test file to trigger permissions.");
+  const fileId = testFile.getId();
+  Logger.log("Test file created with ID: " + fileId);
+  DriveApp.getFileById(fileId).setTrashed(true);
+  Logger.log("Test file deleted. Drive WRITE permissions triggered.");
+}
+
+// ========================================
+// GET IMAGE AS BASE64
+// ========================================
+function getImageBase64(data) {
+  try {
+    const imageUrl = data.imageUrl;
+    if (!imageUrl) return { success: false, message: 'No image URL provided' };
+    
+    // Extract file ID from Google Drive URL
+    let fileId = getFileIdFromUrl(imageUrl);
+    if (!fileId) return { success: false, message: 'Invalid Google Drive URL format' };
+    
+    Logger.log('Fetching image with file ID: ' + fileId);
+    const file = DriveApp.getFileById(fileId);
+    const blob = file.getBlob();
+    const base64 = Utilities.base64Encode(blob.getBytes());
+    
+    return {
+      success: true,
+      base64: base64,
+      mimeType: blob.getContentType()
+    };
+  } catch (error) {
+    Logger.log('getImageBase64 error: ' + error.toString());
+    return { success: false, message: 'Failed to fetch image: ' + error.toString() };
+  }
+}
+
+/* --- PHOTO REORGANIZATION --- */
+function organizeExistingPhotos(ss, parentFolderId, payload = {}) {
+    if (!parentFolderId) throw new Error("Parent Folder ID missing.");
+    
+    const trials = sheetToJSON(getSheet(ss, sheetsConfig.trials));
+    const projects = sheetToJSON(getSheet(ss, sheetsConfig.projects));
+    
+    // Process in batches to avoid execution timeout
+    const batchSize = 15; 
+    const startIndex = parseInt(payload.startIndex) || 0;
+    const batch = trials.slice(startIndex, startIndex + batchSize);
+    const isComplete = (startIndex + batchSize) >= trials.length;
+
+    let movedCount = 0;
+    let errorCount = 0;
+
+    const rootFolder = DriveApp.getFolderById(parentFolderId);
+
+    batch.forEach(trial => {
+        const project = projects.find(p => p.ID == trial.ProjectID);
+        const projectName = project ? project.Name : 'Ungrouped Projects';
+        const trialDate = trial.Date ? new Date(trial.Date).toISOString().split('T')[0] : new Date().toISOString().split('T')[0];
+        const formulationName = trial.FormulationName || 'Unknown Formulation';
+        const trialFolderName = `${formulationName} (${trialDate})`.trim();
+        
+        const folderPath = [projectName, trialFolderName];
+        
+        let targetFolder = rootFolder;
+        folderPath.forEach(name => {
+            if (!name) return;
+            const subfolders = targetFolder.getFoldersByName(name);
+            if (subfolders.hasNext()) {
+                targetFolder = subfolders.next();
+            } else {
+                targetFolder = targetFolder.createFolder(name);
+            }
+        });
+
+        const allPhotos = [
+            ...safeJsonParse(trial.PhotoURLs),
+            ...safeJsonParse(trial.WeedPhotosJSON)
+        ];
+
+        allPhotos.forEach(photo => {
+            if (!photo.url) return;
+            const fileId = getFileIdFromUrl(photo.url);
+            if (!fileId) return;
+
+            try {
+                const file = DriveApp.getFileById(fileId);
+                const parents = file.getParents();
+                let alreadyInTarget = false;
+                while (parents.hasNext()) {
+                    if (parents.next().getId() === targetFolder.getId()) {
+                        alreadyInTarget = true;
+                        break;
+                    }
+                }
+                if (!alreadyInTarget) {
+                    file.moveTo(targetFolder);
+                    movedCount++;
+                }
+            } catch (e) {
+                Logger.log(`Error moving file ${fileId}: ${e.message}`);
+                errorCount++;
+            }
+        });
+    });
+
+    return { 
+        success: true, 
+        moved: movedCount, 
+        errors: errorCount, 
+        isComplete: isComplete, 
+        nextIndex: startIndex + batchSize,
+        processed: batch.length,
+        total: trials.length
+    };
+}
+
+/* --- SCAN PHOTO CONSISTENCY --- */
+function scanPhotoConsistency(ss, parentFolderId) {
+    const trials = sheetToJSON(getSheet(ss, sheetsConfig.trials));
+    const referencedIds = new Set();
+    trials.forEach(trial => {
+        const photos = [...safeJsonParse(trial.PhotoURLs), ...safeJsonParse(trial.WeedPhotosJSON)];
+        photos.forEach(photo => {
+            if (photo.url) {
+                const id = getFileIdFromUrl(photo.url);
+                if (id) referencedIds.add(id);
+            }
+        });
+    });
+    let totalFiles = 0;
+    let referencedInFolder = 0;
+    const sampleOrphans = [];
+    const maxSample = 50;
+    if (parentFolderId) {
+        try {
+            const rootFolder = DriveApp.getFolderById(parentFolderId);
+            const files = rootFolder.getFiles();
+            while (files.hasNext()) {
+                const file = files.next();
+                totalFiles++;
+                if (referencedIds.has(file.getId())) {
+                    referencedInFolder++;
+                } else if (sampleOrphans.length < maxSample) {
+                    sampleOrphans.push({ id: file.getId(), name: file.getName(), path: rootFolder.getName() + '/' + file.getName() });
+                }
+            }
+        } catch (e) {
+            Logger.log('scanPhotoConsistency folder read error: ' + e.message);
+        }
+    }
+    const unreferencedFiles = Math.max(0, totalFiles - referencedInFolder);
+    return { totalFiles: totalFiles, referencedFiles: referencedInFolder, unreferencedFiles: unreferencedFiles, sampleOrphans: sampleOrphans };
+}
+
+// ========================================
+// AUTHENTICATION
+// ========================================
+function loginUser(ss, username, password) {
+    const sheet = ss.getSheetByName(sheetsConfig.users);
+    if (!sheet) throw new Error("Database not initialized.");
+    const data = sheet.getDataRange().getValues();
+    if (data.length < 2) throw new Error("Invalid username or password.");
+    const headers = data.shift();
+    
+    let user = null;
+    for (let row of data) {
+        let obj = {};
+        headers.forEach((h, i) => obj[h] = row[i]);
+        if (obj.Username === username && obj.Password === password) {
+            user = obj;
+            break;
+        }
+    }
+    
+    if (!user) throw new Error("Invalid username or password.");
+    if (String(user.IsActive || 'true').toLowerCase() === 'false') {
+        throw new Error("Account is disabled. Contact administrator.");
+    }
+    const { Password, ...safeUser } = user;
+    if (!safeUser.ApiKeysJSON) safeUser.ApiKeysJSON = '[]';
+    return safeUser;
+}
+
+function getUserById(ss, userId) {
+    if (!userId) return null;
+    const sheet = getSheet(ss, sheetsConfig.users);
+    const headers = getHeaders(sheet);
+    const values = sheet.getDataRange().getValues();
+    if (values.length < 2) return null;
+    for (let r = 1; r < values.length; r++) {
+        const row = values[r];
+        const id = String(row[0] || '').trim();
+        if (id !== String(userId)) continue;
+        const obj = {};
+        headers.forEach((h, i) => obj[h] = row[i]);
+        obj.__rowIndex = r + 1;
+        return obj;
+    }
+    return null;
+}
+
+function resolveEffectiveFolderId(ss, auth, fallbackFolderId) {
+    if (auth && String(auth.Role || '').toLowerCase() === 'admin') {
+        return fallbackFolderId;
+    }
+
+    const user = getUserById(ss, auth && auth.ID);
+    const userFolder = String((user && user.DriveFolderId) || '').trim();
+    if (userFolder) return userFolder;
+
+    return fallbackFolderId;
+}
+
+function updateMyUserConfig(ss, auth, payload) {
+    if (!auth || !auth.ID) throw new Error('Authentication required.');
+    const user = getUserById(ss, auth.ID);
+    if (!user || !user.__rowIndex) throw new Error('User not found.');
+
+    const sheet = getSheet(ss, sheetsConfig.users);
+    const headers = getHeaders(sheet);
+    const rowIndex = user.__rowIndex;
+    const rowRange = sheet.getRange(rowIndex, 1, 1, headers.length);
+    const row = rowRange.getValues()[0];
+
+    const driveCol = headers.indexOf('DriveFolderId');
+    const keysCol = headers.indexOf('ApiKeysJSON');
+    const updatedAtCol = headers.indexOf('UpdatedAt');
+
+    if (driveCol !== -1 && payload.DriveFolderId !== undefined) {
+        row[driveCol] = normalizeDriveFolderId(payload.DriveFolderId);
+    }
+
+    if (keysCol !== -1 && payload.ApiKeysJSON !== undefined) {
+        let parsed = [];
+        try {
+            const raw = typeof payload.ApiKeysJSON === 'string' ? JSON.parse(payload.ApiKeysJSON || '[]') : payload.ApiKeysJSON;
+            if (Array.isArray(raw)) {
+                parsed = raw.map(k => String(k || '').trim()).filter(Boolean);
+            }
+        } catch (e) {
+            throw new Error('Invalid ApiKeysJSON format.');
+        }
+        row[keysCol] = JSON.stringify(parsed);
+    }
+
+    if (updatedAtCol !== -1) {
+        row[updatedAtCol] = new Date().toISOString();
+    }
+
+    rowRange.setValues([row]);
+    SpreadsheetApp.flush();
+
+    const refreshed = getUserById(ss, auth.ID) || user;
+    const { Password, __rowIndex, ...safeUser } = refreshed;
+    return safeUser;
+}
+
+function adminUpdateUserConfig(ss, auth, payload) {
+    if (!auth || String(auth.Role || '').toLowerCase() !== 'admin') {
+        throw new Error('Admin only.');
+    }
+    const userId = String(payload && (payload.userId || payload.ID) || '').trim();
+    if (!userId) throw new Error('Target user ID is required.');
+
+    const targetUser = getUserById(ss, userId);
+    if (!targetUser || !targetUser.__rowIndex) throw new Error('Target user not found.');
+
+    const sheet = getSheet(ss, sheetsConfig.users);
+    const headers = getHeaders(sheet);
+    const rowIndex = targetUser.__rowIndex;
+    const rowRange = sheet.getRange(rowIndex, 1, 1, headers.length);
+    const row = rowRange.getValues()[0];
+
+    const activeCol = headers.indexOf('IsActive');
+    const driveCol = headers.indexOf('DriveFolderId');
+    const keysCol = headers.indexOf('ApiKeysJSON');
+    const updatedAtCol = headers.indexOf('UpdatedAt');
+
+    if (payload.IsActive !== undefined && activeCol !== -1) {
+        const requested = String(payload.IsActive).toLowerCase() === 'true';
+        if (!requested && String(userId) === String(auth.ID)) {
+            throw new Error('You cannot deactivate your own account.');
+        }
+        row[activeCol] = requested ? 'true' : 'false';
+    }
+
+    if (payload.DriveFolderId !== undefined && driveCol !== -1) {
+        row[driveCol] = normalizeDriveFolderId(payload.DriveFolderId);
+    }
+
+    if ((payload.resetApiKeys === true || String(payload.resetApiKeys).toLowerCase() === 'true') && keysCol !== -1) {
+        row[keysCol] = '[]';
+    } else if (payload.ApiKeysJSON !== undefined && keysCol !== -1) {
+        let parsed = [];
+        try {
+            const raw = typeof payload.ApiKeysJSON === 'string' ? JSON.parse(payload.ApiKeysJSON || '[]') : payload.ApiKeysJSON;
+            if (Array.isArray(raw)) {
+                parsed = raw.map(k => String(k || '').trim()).filter(Boolean);
+            }
+        } catch (e) {
+            throw new Error('Invalid ApiKeysJSON format.');
+        }
+        row[keysCol] = JSON.stringify(parsed);
+    }
+
+    if (updatedAtCol !== -1) {
+        row[updatedAtCol] = new Date().toISOString();
+    }
+
+    rowRange.setValues([row]);
+    SpreadsheetApp.flush();
+
+    const refreshed = getUserById(ss, userId) || targetUser;
+    const { Password, __rowIndex, ...safeUser } = refreshed;
+    return { success: true, user: safeUser };
+}
+
+function adminRunUserDiagnostics(ss, payload) {
+    const userId = String(payload && (payload.userId || payload.ID) || '').trim();
+    if (!userId) throw new Error('Target user ID is required.');
+
+    const user = getUserById(ss, userId);
+    if (!user) throw new Error('Target user not found.');
+
+    const folderId = normalizeDriveFolderId(user.DriveFolderId || '');
+    const folderResult = {
+        ok: false,
+        folderId: folderId,
+        folderName: '',
+        message: ''
+    };
+
+    let uploadResult = {
+        ok: false,
+        message: 'Skipped: no valid folder configured.'
+    };
+
+    if (folderId) {
+        try {
+            const folder = DriveApp.getFolderById(folderId);
+            folderResult.ok = true;
+            folderResult.folderName = folder.getName();
+            folderResult.message = 'Folder found and readable.';
+
+            try {
+                const fileName = 'tmp_upload_test_' + new Date().getTime() + '.txt';
+                const blob = Utilities.newBlob('upload test', 'text/plain', fileName);
+                const testFile = folder.createFile(blob);
+                testFile.setTrashed(true);
+                uploadResult = { ok: true, message: 'Upload write/delete test passed.' };
+            } catch (writeErr) {
+                uploadResult = { ok: false, message: 'Upload test failed: ' + writeErr.message };
+            }
+        } catch (folderErr) {
+            folderResult.message = 'Folder check failed: ' + folderErr.message;
+        }
+    } else {
+        folderResult.message = 'No Drive folder configured.';
+    }
+
+    let keys = [];
+    try {
+        const parsed = JSON.parse(user.ApiKeysJSON || '[]');
+        keys = Array.isArray(parsed) ? parsed.map(k => String(k || '').trim()).filter(Boolean) : [];
+    } catch (e) {
+        keys = [];
+    }
+
+    const apiResult = validateGeminiApiKeys(keys);
+
+    return {
+        success: true,
+        userId: userId,
+        username: user.Username || '',
+        checks: {
+            folder: folderResult,
+            api: apiResult,
+            upload: uploadResult
+        },
+        checkedAt: new Date().toISOString()
+    };
+}
+
+function validateGeminiApiKeys(apiKeys) {
+    if (!apiKeys || !apiKeys.length) {
+        return {
+            ok: false,
+            totalKeys: 0,
+            validCount: 0,
+            message: 'No API keys configured.',
+            details: []
+        };
+    }
+
+    const details = [];
+    let validCount = 0;
+    for (let i = 0; i < apiKeys.length; i++) {
+        const key = String(apiKeys[i] || '').trim();
+        if (!key) continue;
+        const endpoint = 'https://generativelanguage.googleapis.com/v1beta/models?key=' + encodeURIComponent(key);
+        try {
+            const res = UrlFetchApp.fetch(endpoint, { method: 'get', muteHttpExceptions: true });
+            const code = res.getResponseCode();
+            const ok = code >= 200 && code < 300;
+            if (ok) validCount++;
+            details.push({ index: i, ok: ok, statusCode: code });
+        } catch (e) {
+            details.push({ index: i, ok: false, statusCode: 0, error: e.message });
+        }
+    }
+
+    return {
+        ok: validCount > 0,
+        totalKeys: apiKeys.length,
+        validCount: validCount,
+        message: validCount > 0 ? 'At least one key is valid.' : 'No valid API keys detected.',
+        details: details
+    };
+}
+
+function adminExportUserData(ss, payload) {
+    const userId = String(payload && (payload.userId || payload.ID) || '').trim();
+    if (!userId) throw new Error('Target user ID is required.');
+
+    const user = getUserById(ss, userId);
+    if (!user) throw new Error('Target user not found.');
+
+    const data = getAllUserOwnedData(ss, userId);
+    return {
+        success: true,
+        exportedAt: new Date().toISOString(),
+        user: {
+            ID: String(user.ID || userId),
+            Username: user.Username || '',
+            Name: user.Name || '',
+            Role: user.Role || 'User'
+        },
+        data: data
+    };
+}
+
+function adminImportUserData(ss, payload) {
+    const userId = String(payload && (payload.userId || payload.ID) || '').trim();
+    if (!userId) throw new Error('Target user ID is required.');
+
+    const user = getUserById(ss, userId);
+    if (!user) throw new Error('Target user not found.');
+
+    const importData = payload && payload.data;
+    if (!importData || typeof importData !== 'object') throw new Error('Import data is required.');
+
+    const mode = String((payload && payload.mode) || 'append').toLowerCase();
+    const replaceMode = mode === 'replace' || mode === 'overwrite';
+
+    const mapping = [
+        { key: 'ingredients', sheetName: sheetsConfig.ingredients },
+        { key: 'formulations', sheetName: sheetsConfig.formulations },
+        { key: 'projects', sheetName: sheetsConfig.projects },
+        { key: 'blocks', sheetName: sheetsConfig.blocks },
+        { key: 'trials', sheetName: sheetsConfig.trials },
+        { key: 'organisations', sheetName: sheetsConfig.organisations }
+    ];
+
+    if (replaceMode) {
+        mapping.forEach(m => deleteRowsByCreatedBy(ss, m.sheetName, userId));
+    }
+
+    let inserted = 0;
+    mapping.forEach(m => {
+        const items = Array.isArray(importData[m.key]) ? importData[m.key] : [];
+        if (!items.length) return;
+        inserted += upsertImportedRowsForUser(ss, m.sheetName, items, userId);
+    });
+
+    return {
+        success: true,
+        mode: replaceMode ? 'replace' : 'append',
+        inserted: inserted,
+        importedAt: new Date().toISOString()
+    };
+}
+
+function getAllUserOwnedData(ss, userId) {
+    const userIdStr = String(userId || '').trim();
+    const filterByOwner = (row) => String(row.CreatedBy || '').trim() === userIdStr;
+
+    return {
+        ingredients: sheetToJSON(getSheet(ss, sheetsConfig.ingredients), filterByOwner),
+        formulations: sheetToJSON(getSheet(ss, sheetsConfig.formulations), filterByOwner),
+        projects: sheetToJSON(getSheet(ss, sheetsConfig.projects), filterByOwner),
+        blocks: sheetToJSON(getSheet(ss, sheetsConfig.blocks), filterByOwner),
+        trials: sheetToJSON(getSheet(ss, sheetsConfig.trials), filterByOwner),
+        organisations: sheetToJSON(getSheet(ss, sheetsConfig.organisations), filterByOwner)
+    };
+}
+
+function deleteRowsByCreatedBy(ss, sheetName, userId) {
+    const sheet = getSheet(ss, sheetName);
+    const headers = getHeaders(sheet);
+    const ownerIdx = headers.indexOf('CreatedBy');
+    if (ownerIdx === -1 || sheet.getLastRow() < 2) return 0;
+
+    const values = sheet.getRange(2, 1, sheet.getLastRow() - 1, headers.length).getValues();
+    const rowsToDelete = [];
+    values.forEach((row, idx) => {
+        if (String(row[ownerIdx] || '').trim() === String(userId)) {
+            rowsToDelete.push(idx + 2);
+        }
+    });
+
+    rowsToDelete.reverse().forEach(r => sheet.deleteRow(r));
+    return rowsToDelete.length;
+}
+
+function upsertImportedRowsForUser(ss, sheetName, items, userId) {
+    const sheet = getSheet(ss, sheetName);
+    const headers = getHeaders(sheet);
+    const ownerIdx = headers.indexOf('CreatedBy');
+    if (sheet.getLastRow() < 1) return 0;
+
+    let inserted = 0;
+    const rows = items.map(item => {
+        const rowObj = { ...item };
+        if (!rowObj.ID) rowObj.ID = Utilities.getUuid();
+        if (ownerIdx !== -1) rowObj.CreatedBy = String(userId);
+        return headers.map(h => rowObj[h] !== undefined ? rowObj[h] : '');
+    });
+
+    if (rows.length > 0) {
+        sheet.insertRowsAfter(1, rows.length);
+        sheet.getRange(2, 1, rows.length, headers.length).setValues(rows);
+        inserted = rows.length;
+    }
+    return inserted;
+}
+
+// ========================================
+// SYNC CONFLICTS
+// ========================================
+function getSyncConflicts(ss, payload, auth) {
+    const sheet = getSheet(ss, sheetsConfig.syncConflicts);
+    const filterFn = auth && auth.Role !== 'Admin'
+        ? (row) => String(row.CreatedBy || '').trim() === String(auth.ID)
+        : null;
+    const all = sheetToJSON(sheet, filterFn);
+    const unresolvedOnly = payload && payload.unresolvedOnly;
+    return {
+        success: true,
+        conflicts: unresolvedOnly
+            ? all.filter(c => !c.Resolved || c.Resolved === '0' || c.Resolved === 'false')
+            : all
+    };
+}
+
+function resolveSyncConflict(ss, payload, auth) {
+    const id = payload.ID || payload.id;
+    if (!id) throw new Error('Conflict ID required.');
+    const sheet = getSheet(ss, sheetsConfig.syncConflicts);
+    const rowIndex = findRowById(sheet, id);
+    if (rowIndex === -1) throw new Error('Conflict record not found.');
+    const headers = getHeaders(sheet);
+    const row = sheet.getRange(rowIndex, 1, 1, headers.length).getValues()[0];
+    const update = { ...payload };
+    update.Resolved = '1';
+    update.ResolvedAt = new Date().toISOString();
+    headers.forEach((h, i) => {
+        if (update[h] !== undefined) row[i] = update[h];
+    });
+    sheet.getRange(rowIndex, 1, 1, headers.length).setValues([row]);
+    SpreadsheetApp.flush();
+    return { success: true, id };
+}
+
+// ========================================
+// SPRAY LOGS
+// ========================================
+function getSprayLogs(ss, payload, auth) {
+    const sheet = getSheet(ss, sheetsConfig.sprayLogs);
+    const filterFn = auth && auth.Role !== 'Admin'
+        ? (row) => String(row.CreatedBy || '').trim() === String(auth.ID)
+        : null;
+    let logs = sheetToJSON(sheet, filterFn);
+    if (payload && payload.projectId) {
+        logs = logs.filter(l => String(l.ProjectID || '') === String(payload.projectId));
+    }
+    if (payload && payload.trialId) {
+        logs = logs.filter(l => String(l.TrialID || '') === String(payload.trialId));
+    }
+    return { success: true, logs };
+}
+
+// ========================================
+// DOSE-RESPONSE PERSISTENCE
+// ========================================
+/**
+ * Save fitted dose-response curve parameters to a project record.
+ * Stores as DoseResponseResultsJSON: { [formulationName]: { ed50, ed90, r2, params, ... } }
+ */
+function saveDoseResponseResult(ss, payload, auth) {
+    if (!payload.projectId && !payload.formulationName) {
+        // Save directly to project if projectId provided
+        throw new Error('projectId and formulationName are required.');
+    }
+
+    if (payload.projectId) {
+        const project = getRecordById(ss, sheetsConfig.projects, payload.projectId);
+        if (!project) throw new Error('Project not found.');
+
+        let existing = {};
+        try { existing = JSON.parse(project.DoseResponseResultsJSON || '{}'); } catch (e) { existing = {}; }
+        existing[payload.formulationName] = {
+            ed10: payload.ed10 || null,
+            ed50: payload.ed50 || null,
+            ed90: payload.ed90 || null,
+            r2: payload.r2 || null,
+            slope: payload.slope || null,
+            selectivityIndex: payload.selectivityIndex || null,
+            weedSpecies: payload.weedSpecies || '',
+            fittedAt: new Date().toISOString()
+        };
+
+        return updateRecord(ss, sheetsConfig.projects, {
+            ID: payload.projectId,
+            DoseResponseResultsJSON: JSON.stringify(existing)
+        }, auth);
+    }
+
+    return { success: true };
+}
+
+function getDoseResponseData(ss, payload, auth) {
+    // Return trial data structured for dose-response fitting
+    const filterFn = auth && auth.Role !== 'Admin'
+        ? (row) => String(row.CreatedBy || '').trim() === String(auth.ID)
+        : null;
+    const trials = sheetToJSON(getSheet(ss, sheetsConfig.trials), filterFn);
+
+    const formulation = payload.formulationName || '';
+    const weedSpecies = payload.weedSpecies || '';
+    const targetDaa = payload.targetDaa ? parseInt(payload.targetDaa) : null;
+
+    const points = [];
+    trials.forEach(trial => {
+        if (formulation && (trial.FormulationName || '').toLowerCase() !== formulation.toLowerCase()) return;
+        if (weedSpecies && (trial.WeedSpecies || '').toLowerCase() !== weedSpecies.toLowerCase()) return;
+
+        const dose = parseFloat(trial.Dosage || 0);
+        if (isNaN(dose) || dose < 0) return;
+
+        const obsData = safeJsonParse(trial.EfficacyDataJSON);
+        if (!obsData.length) return;
+
+        let obs = null;
+        if (targetDaa !== null) {
+            obs = obsData.find(o => Math.abs((o.daa || 0) - targetDaa) <= 3);
+        } else {
+            const positiveObs = obsData.filter(o => (o.daa || 0) > 0);
+            obs = positiveObs.sort((a, b) => b.daa - a.daa)[0];
+        }
+        if (!obs) return;
+
+        let efficacy = null;
+        if (obs.controlPct !== undefined && obs.controlPct !== null) {
+            efficacy = parseFloat(obs.controlPct);
+        } else {
+            const baseline = obsData[0] && obsData[0].weedCover;
+            if (baseline > 0) {
+                efficacy = Math.max(0, ((parseFloat(baseline) - parseFloat(obs.weedCover || 0)) / parseFloat(baseline)) * 100);
+            }
+        }
+        if (efficacy === null || isNaN(efficacy)) return;
+
+        points.push({
+            dose,
+            response: Math.min(100, Math.max(0, efficacy)),
+            trialId: trial.ID,
+            location: trial.Location || '',
+            date: trial.Date || '',
+            replication: trial.Replication || ''
+        });
+    });
+
+    return { success: true, points, count: points.length };
+}
+
+// ========================================
+// RESISTANCE DATA (Server-Side Aggregation)
+// ========================================
+/**
+ * Aggregates trial efficacy data server-side grouped by weed × formulation × location
+ * to build resistance profiles (avoids sending all trials to client).
+ */
+function getResistanceData(ss, payload, auth) {
+    const filterFn = auth && auth.Role !== 'Admin'
+        ? (row) => String(row.CreatedBy || '').trim() === String(auth.ID)
+        : null;
+    const trials = sheetToJSON(getSheet(ss, sheetsConfig.trials), filterFn);
+
+    const weedFilter = (payload && payload.weedSpecies || '').toLowerCase();
+    const formulationFilter = (payload && payload.formulationName || '').toLowerCase();
+
+    const profiles = {};
+
+    trials.forEach(trial => {
+        if (!trial.WeedSpecies || !trial.FormulationName) return;
+        if (weedFilter && trial.WeedSpecies.toLowerCase() !== weedFilter) return;
+        if (formulationFilter && trial.FormulationName.toLowerCase() !== formulationFilter) return;
+
+        const obsData = safeJsonParse(trial.EfficacyDataJSON);
+        if (!obsData.length) return;
+
+        const lastObs = obsData.filter(o => (o.daa || 0) > 0).sort((a, b) => b.daa - a.daa)[0];
+        if (!lastObs) return;
+
+        let efficacy = null;
+        if (lastObs.controlPct !== undefined) {
+            efficacy = parseFloat(lastObs.controlPct);
+        } else {
+            const baseline = obsData[0] && obsData[0].weedCover;
+            if (baseline > 0) {
+                efficacy = Math.max(0, ((parseFloat(baseline) - parseFloat(lastObs.weedCover || 0)) / parseFloat(baseline)) * 100);
+            }
+        }
+        if (efficacy === null || isNaN(efficacy)) return;
+
+        const location = trial.Location || 'Unknown';
+        const year = trial.Date ? new Date(trial.Date).getFullYear() : null;
+        const key = trial.WeedSpecies + '||' + trial.FormulationName + '||' + location;
+
+        if (!profiles[key]) {
+            profiles[key] = {
+                weed: trial.WeedSpecies,
+                formulation: trial.FormulationName,
+                location,
+                yearlyData: {},
+                trialCount: 0,
+                efficacySum: 0
+            };
+        }
+
+        if (year) {
+            if (!profiles[key].yearlyData[year]) profiles[key].yearlyData[year] = [];
+            profiles[key].yearlyData[year].push(efficacy);
+        }
+        profiles[key].trialCount++;
+        profiles[key].efficacySum += efficacy;
+    });
+
+    // Compute trend per profile
+    const result = Object.values(profiles).map(p => {
+        const years = Object.keys(p.yearlyData).map(Number).sort();
+        const yearlyAvg = years.map(y => ({
+            year: y,
+            avg: p.yearlyData[y].reduce((a, b) => a + b, 0) / p.yearlyData[y].length,
+            n: p.yearlyData[y].length
+        }));
+        const effiDrop = yearlyAvg.length >= 2
+            ? yearlyAvg[0].avg - yearlyAvg[yearlyAvg.length - 1].avg
+            : 0;
+        const overallAvg = p.trialCount > 0 ? p.efficacySum / p.trialCount : 0;
+        return {
+            weed: p.weed,
+            formulation: p.formulation,
+            location: p.location,
+            yearlyAvg,
+            effiDrop: Math.round(effiDrop * 10) / 10,
+            overallAvg: Math.round(overallAvg * 10) / 10,
+            trialCount: p.trialCount
+        };
+    });
+
+    return { success: true, profiles: result };
+}
+
+/* --- HELPERS --- */
+function getFileIdFromUrl(url) {
+  if (!url) return null;
+
+  try {
+    // Normalise string
+    const raw = String(url).trim();
+
+    // 1) Direct "id=" parameter (covers many uc?export=view&id=... links)
+    let match = raw.match(/[?&]id=([^&]+)/);
+    if (match && match[1]) return match[1];
+
+    // 2) Standard file URL: https://drive.google.com/file/d/FILE_ID/...
+    match = raw.match(/\/d\/([^/]+)/);
+    if (match && match[1]) return match[1];
+
+    // 3) Try again on decoded URL (handles id%3D... cases)
+    let decoded = null;
+    try {
+      decoded = decodeURIComponent(raw);
+    } catch (e) {
+      decoded = raw;
+    }
+
+    match = decoded.match(/[?&]id=([^&]+)/);
+    if (match && match[1]) return match[1];
+
+    match = decoded.match(/\/d\/([^/]+)/);
+    if (match && match[1]) return match[1];
+
+    // 4) Last‑resort: common Googleusercontent pattern that still embeds an id
+    // Example: .../download?id=FILE_ID&export=...
+    match = decoded.match(/download\?id=([^&]+)/);
+    if (match && match[1]) return match[1];
+
+    Logger.log('getFileIdFromUrl: could not extract ID from URL: ' + raw);
+    return null;
+  } catch (e) {
+    Logger.log('getFileIdFromUrl error for URL "' + url + '": ' + e.message);
+    return null;
+  }
+}
+
+function normalizeDriveFolderId(input) {
+    const raw = String(input || '').trim();
+    if (!raw) return '';
+
+    const fromUrl = getFileIdFromUrl(raw);
+    if (fromUrl) return String(fromUrl).trim();
+
+    // If it's not a URL, keep the raw value as provided (assume plain folder ID).
+    return raw;
+}
+
+function getUsersList(ss) {
+    const sheet = getSheet(ss, sheetsConfig.users);
+    const users = sheetToJSON(sheet);
+    // Redact passwords
+    return users.map(u => {
+        const { Password, ...safeUser } = u;
+        return safeUser;
+    });
+}
+
+function safeJsonParse(jsonString) {
+    if (!jsonString || jsonString === "" || jsonString === "null") return [];
+    try {
+        const parsed = JSON.parse(jsonString);
+        return Array.isArray(parsed) ? parsed : [];
+    } catch (e) {
+        return [];
+    }
+}
+function testFolderAccess() {
+  const folder = DriveApp.getFolderById("14UTh_QWhCRoaQ0JvfKeg7LZvOGZRF_rT");
+  Logger.log(folder.getName());
+}
