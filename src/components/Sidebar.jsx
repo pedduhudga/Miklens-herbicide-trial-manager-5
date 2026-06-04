@@ -4,7 +4,7 @@ import {
   LayoutDashboard, FolderKanban, ScanQrCode, FlaskConical,
   ListChecks, FileBox, ShoppingBag, Sparkles, BarChartBig,
   MapPin, Search, Database, Settings, Users, LogOut, Calculator, Bell,
-  TrendingDown, ShieldAlert, Flame
+  TrendingDown, ShieldAlert, Flame, Compass
 } from 'lucide-react';
 import { useAppState } from '../hooks/useAppState.jsx';
 import { useAuth } from '../hooks/useAuth.js';
@@ -16,6 +16,7 @@ export default function Sidebar({ isOpen, onClose }) {
 
   const navItems = [
     { to: "/", icon: <LayoutDashboard className="w-5 h-5" />, label: "Dashboard" },
+    { to: "/large-scale-trials", icon: <Compass className="w-5 h-5" />, label: "Large Field Trials" },
     { to: "/projects", icon: <FolderKanban className="w-5 h-5" />, label: "Projects (RCBD)" },
     { to: "/scanner", icon: <ScanQrCode className="w-5 h-5" />, label: "Plot Scanner" },
     { to: "/formulations", icon: <FlaskConical className="w-5 h-5" />, label: "Formulations" },

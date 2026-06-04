@@ -15,6 +15,7 @@ import ResistanceTracker from './pages/ResistanceTracker.jsx';
 import FieldMap from './pages/FieldMap.jsx';
 import Trials from './pages/Trials.jsx';
 import Projects from './pages/Projects.jsx';
+import LargeScaleTrials from './pages/LargeScaleTrials.jsx';
 import Ingredients from './pages/Ingredients.jsx';
 import Organisations from './pages/Organisations.jsx';
 import Formulations from './pages/Formulations.jsx';
@@ -133,6 +134,7 @@ function AppLayout() {
       <main className="flex-1 flex flex-col min-w-0 overflow-hidden bg-transparent">
         <Routes>
           <Route path="/" element={<Dashboard onMenuClick={toggleSidebar} />} />
+          <Route path="/large-scale-trials" element={<LargeScaleTrials onMenuClick={toggleSidebar} />} />
           <Route path="/projects" element={<Projects onMenuClick={toggleSidebar} />} />
           <Route path="/scanner" element={<PlotScanner onMenuClick={toggleSidebar} />} />
           <Route path="/formulations" element={<Formulations onMenuClick={toggleSidebar} />} />
