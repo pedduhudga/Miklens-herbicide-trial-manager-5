@@ -13,6 +13,7 @@ import {
 import { safeJsonParse } from '../utils/helpers.js';
 import { AnalysisEngine } from '../utils/analysisUtils.js';
 import PlotMap from '../components/PlotMap.jsx';
+import { formatDate, formatDateTime, toDatetimeLocal } from '../utils/dateUtils.js';
 
 // ── helpers ────────────────────────────────────────────────────────────────
 const INPUT = 'w-full px-3 py-2 border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-emerald-400 bg-white';
@@ -491,7 +492,7 @@ Write a 3-paragraph Narrative covering Methodology, Results and Conclusions.`;
 <div>Project ID: <span>${activeProject.ID}</span></div><div>Status: <span>${activeProject.Status || 'Draft'}</span></div>
 <div>Location: <span>${activeProject.Location || 'N/A'}</span></div><div>Investigator: <span>${activeProject.Investigator || 'N/A'}</span></div>
 <div>Crop: <span>${activeProject.Crop || 'N/A'}</span></div><div>Target Weed: <span>${activeProject.TargetWeed || 'N/A'}</span></div>
-<div>Metric: <span>${activeProject.Metric}</span></div><div>Generated: <span>${new Date().toLocaleDateString()}</span></div>
+<div>Metric: <span>${activeProject.Metric}</span></div><div>Generated: <span>${formatDateTime(new Date())}</span></div>
 <div>Blocks: <span>${pBlocks.length}</span></div><div>Plots: <span>${pTrials.length}</span></div>
 </div>
 <h2>Summary Statistics</h2>
@@ -535,7 +536,7 @@ Write a 3-paragraph Narrative covering Methodology, Results and Conclusions.`;
 <strong>Investigator:</strong> ${activeProject.Investigator || 'N/A'}<br>
 <strong>Crop:</strong> ${activeProject.Crop || 'N/A'}<br>
 <strong>Metric:</strong> ${activeProject.Metric}<br>
-<strong>Generated:</strong> ${new Date().toLocaleDateString()}</p>
+<strong>Generated:</strong> ${formatDateTime(new Date())}</p>
 <h2>Treatment Means & Grouping (${postHocMethod === 'tukey' ? 'Tukey HSD' : "Fisher's LSD"})</h2>
 <table border="1" cellpadding="6" cellspacing="0">
 <tr><th>Treatment</th><th>Mean</th><th>SD</th><th>CV%</th><th>WCE%</th><th>Group</th></tr>
@@ -580,7 +581,7 @@ LSD/HSD (0.05): ${isFinite(analysisResults.postHoc?.value) ? analysisResults.pos
 <div class="meta"><div>Location: <span>${activeProject.Location || 'N/A'}</span></div><div>Investigator: <span>${activeProject.Investigator || 'N/A'}</span></div>
 <div>Crop: <span>${activeProject.Crop || 'N/A'}</span></div><div>Metric: <span>${activeProject.Metric}</span></div>
 <div>Blocks: <span>${pBlocks.length}</span></div><div>Plots: <span>${pTrials.length}</span></div>
-<div>Start Date: <span>${activeProject.StartDate || 'N/A'}</span></div><div>Generated: <span>${new Date().toLocaleDateString()}</span></div></div>
+<div>Start Date: <span>${formatDateTime(activeProject.StartDate) || 'N/A'}</span></div><div>Generated: <span>${formatDateTime(new Date())}</span></div></div>
 <h2>Treatment Means & Statistical Grouping</h2>
 <table><thead><tr><th>Treatment</th><th>Mean</th><th>SD</th><th>CV%</th><th>WCE%</th><th>Group (${postHocMethod === 'tukey' ? 'Tukey' : 'LSD'})</th></tr></thead><tbody>${rows}</tbody></table>
 <p style="font-size:11px;color:#64748b;margin-top:6px">Means sharing the same letter are not significantly different (${postHocMethod === 'tukey' ? 'Tukey HSD' : "Fisher's LSD"}, α=0.05). ${postHocMethod === 'tukey' ? 'HSD' : 'LSD'} (0.05): ${isFinite(analysisResults.postHoc?.value) ? analysisResults.postHoc.value.toFixed(2) : 'N/A'}</p>
@@ -1191,7 +1192,7 @@ ${narrative ? `<h2>Agronomist Narrative</h2><p style="font-size:13px;line-height
                 </div>
 
                 <div className="pt-3 border-t border-slate-50 flex justify-between items-center">
-                  <span className="text-[10px] text-slate-400">{p.CreatedAt ? new Date(p.CreatedAt).toLocaleDateString() : '—'}</span>
+                  <span className="text-[10px] text-slate-400">{formatDateTime(p.CreatedAt) || '—'}</span>
                   <span className="text-emerald-600 font-bold text-xs flex items-center gap-1">View Dashboard <ChevronRight className="h-3.5 w-3.5" /></span>
                 </div>
               </div>
@@ -1228,7 +1229,7 @@ ${narrative ? `<h2>Agronomist Narrative</h2><p style="font-size:13px;line-height
             </div>
             <div>
               <label className="block text-sm font-semibold text-slate-700 mb-1">Start Date</label>
-              <input type="date" value={formData.StartDate} onChange={e => setFormData(v => ({ ...v, StartDate: e.target.value }))} className={INPUT} />
+              <input type="datetime-local" value={toDatetimeLocal(formData.StartDate)} onChange={e => setFormData(v => ({ ...v, StartDate: e.target.value }))} className={INPUT} />
             </div>
           </div>
           <div>

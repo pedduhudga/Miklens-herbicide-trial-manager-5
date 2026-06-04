@@ -15,7 +15,7 @@ import {
   FileCode, MonitorPlay, Archive, Pencil, ScanLine, Crop, Clock
 } from 'lucide-react';
 import { safeJsonParse } from '../utils/helpers.js';
-import { calculateDAA, toDateKey, formatPhotoDate, toDatetimeLocal } from '../utils/dateUtils.js';
+import { calculateDAA, toDateKey, formatPhotoDate, toDatetimeLocal, formatDate, formatDateTime } from '../utils/dateUtils.js';
 import { validateEfficacyData } from '../utils/analysisUtils.js';
 import CameraCapture from '../components/CameraCapture.jsx';
 import CropperModal from '../components/CropperModal.jsx';
@@ -46,7 +46,7 @@ const RESULT_COLORS = {
 
 const emptyForm = () => ({
   ProjectID: '', BlockID: '', FormulationName: '', InvestigatorName: '',
-  Date: new Date().toISOString().split('T')[0], Location: '', Dosage: '',
+  Date: toDatetimeLocal(new Date()), Location: '', Dosage: '',
   Lat: '', Lon: '',
   WeedSpecies: '', Result: '', Notes: '', Conclusion: '',
   IsControl: false, IsStandardCheck: false, IsCompleted: false,
@@ -86,7 +86,7 @@ export default function Trials({ onMenuClick }) {
   // --- Observation modal ---
   const [isObsModalOpen, setIsObsModalOpen] = useState(false);
   const [editingObsIdx, setEditingObsIdx] = useState(null);
-  const [obsForm, setObsForm] = useState({ daa: '', date: new Date().toISOString().split('T')[0], weedCover: '', notes: '', weedDetails: [], weatherTemp: '', weatherHumidity: '', weatherWind: '', weatherRain: '' });
+  const [obsForm, setObsForm] = useState({ daa: '', date: toDatetimeLocal(new Date()), weedCover: '', notes: '', weedDetails: [], weatherTemp: '', weatherHumidity: '', weatherWind: '', weatherRain: '' });
 
   // --- Bulk Edit modal ---
   const [isBulkEditOpen, setIsBulkEditOpen] = useState(false);
@@ -260,7 +260,7 @@ export default function Trials({ onMenuClick }) {
         ProjectID: trial.ProjectID || '', BlockID: trial.BlockID || '',
         FormulationName: isDuplicate ? `${trial.FormulationName} (Copy)` : (trial.FormulationName || ''),
         InvestigatorName: trial.InvestigatorName || '',
-        Date: isDuplicate ? new Date().toISOString().split('T')[0] : (trial.Date || ''),
+        Date: isDuplicate ? toDatetimeLocal(new Date()) : (trial.Date ? toDatetimeLocal(trial.Date) : ''),
         Location: trial.Location || '', Dosage: trial.Dosage || '',
         Lat: trial.Lat || '', Lon: trial.Lon || '',
         WeedSpecies: trial.WeedSpecies || '', Result: trial.Result || '',
@@ -269,7 +269,7 @@ export default function Trials({ onMenuClick }) {
         IsStandardCheck: trial.IsStandardCheck === true || trial.IsStandardCheck === 'true',
         IsCompleted: isDuplicate ? false : (trial.IsCompleted === true || trial.IsCompleted === 'true'),
         ControlFinalized: isDuplicate ? false : (trial.ControlFinalized === true || trial.ControlFinalized === 'true'),
-        FinalizationDate: isDuplicate ? '' : (trial.FinalizationDate || ''),
+        FinalizationDate: isDuplicate ? '' : (trial.FinalizationDate ? toDatetimeLocal(trial.FinalizationDate) : ''),
         FinalControlDuration: isDuplicate ? '' : (trial.FinalControlDuration || ''),
         Temperature: trial.Temperature || '', Humidity: trial.Humidity || '',
         Windspeed: trial.Windspeed || '', Rain: trial.Rain || '',
@@ -1086,11 +1086,11 @@ export default function Trials({ onMenuClick }) {
     if (aiData.notes) aiNotes.push(aiData.notes);
 
     const newObs = {
-      date: obsDate || new Date().toISOString().split('T')[0],
+      date: obsDate || toDatetimeLocal(new Date()),
       daa: Number(daa),
       weedCover: totalWeedCover,
       weedDetails: normalizedWeeds.length > 0 ? normalizedWeeds : [{ species: 'No weeds detected', cover: 0, status: '', notes: aiData.notes || 'AI-analyzed' }],
-      notes: aiNotes.join(' | ') || `AI-analyzed on ${new Date().toLocaleDateString()}`,
+      notes: aiNotes.join(' | ') || `AI-analyzed on ${formatDateTime(new Date())}`,
       aiConfidence: aiData.confidence || 'MEDIUM',
       aiEfficacyAssessment: aiData.efficacyAssessment || '',
       competitionLevel: aiData.competitionLevel || '',
@@ -1401,7 +1401,7 @@ export default function Trials({ onMenuClick }) {
       trialUrls[t.ID] = `${appBase}#/live/${t.ID}`;
     });
 
-    const fmtD = (d) => { try { return new Date(d).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }); } catch { return d || ''; } };
+    const fmtD = (d) => formatDate(d);
 
     const cardsHtml = selectedTrials.map(trial => {
       return `
@@ -1605,7 +1605,7 @@ export default function Trials({ onMenuClick }) {
     const cards = [];
     for (const trial of selectedTrials) {
       const qrCodeUrl = await generateQrCodeDataUrl(buildPrintableTrialUrl(trial));
-      const formattedDate = trial.Date ? new Date(trial.Date).toLocaleDateString() : '';
+      const formattedDate = formatDateTime(trial.Date);
       cards.push(`
         <div class="card">
           <div>
@@ -1686,7 +1686,7 @@ export default function Trials({ onMenuClick }) {
 
   const handleDuplicate = useCallback((trial) => {
     setDuplicateFormulation(trial.FormulationName || '');
-    setDuplicateDate(new Date().toISOString().split('T')[0]);
+    setDuplicateDate(toDatetimeLocal(new Date()));
     setDuplicateDosage('');
     setDuplicateModal(trial);
   }, []);
@@ -1701,7 +1701,7 @@ export default function Trials({ onMenuClick }) {
       ID: undefined,
       FormulationName: duplicateFormulation,
       FormulationID: formMatch ? formMatch.ID : (trial.FormulationID || ''),
-      Date: duplicateDate || new Date().toISOString().split('T')[0],
+      Date: duplicateDate || toDatetimeLocal(new Date()),
       Dosage: duplicateDosage.trim() !== '' ? duplicateDosage.trim() : (trial.Dosage || ''),
       IsCompleted: false, ControlFinalized: false,
       FinalizationDate: '', FinalControlDuration: '',
@@ -1730,7 +1730,7 @@ export default function Trials({ onMenuClick }) {
 
   const handleMarkComplete = useCallback(async (trial) => {
     if (!window.confirm(`Mark "${trial.FormulationName}" as completed? This will stop control day counting and deactivate the trial.`)) return;
-    const finDate = new Date().toISOString().split('T')[0];
+    const finDate = toDatetimeLocal(new Date());
     const start = trial.Date ? new Date(trial.Date) : new Date();
     const days = Math.max(0, Math.round((new Date() - start) / 86400000));
     const finalDuration = trial.FinalControlDuration || String(days);
@@ -1849,7 +1849,7 @@ export default function Trials({ onMenuClick }) {
     }
     // Offline: compact human-readable text encoding (like HTML app)
     const fields = state.settings?.qrOfflineFields || ['FormulationName','Dosage','WeedSpecies','Date','Location'];
-    const fmt = (d) => { try { return new Date(d).toLocaleDateString('en-GB',{day:'2-digit',month:'short',year:'numeric'}).replace(/ /g,'-'); } catch { return d || ''; } };
+    const fmt = (d) => formatDate(d);
     const lines = [`MIKLENS-TRIAL`];
     lines.push(`ID:${trial.ID}`);
     if (fields.includes('FormulationName') && trial.FormulationName) lines.push(`Product:${trial.FormulationName}`);
@@ -1954,13 +1954,7 @@ export default function Trials({ onMenuClick }) {
         return `  ${sp}: ${trajectory} | WCE ${spWce}% | Best suppression ${spMin}% at DAA${spMinDaa} | Final ${spFinal}%`;
       }).join('\n') || '  No per-species data recorded.';
 
-      const fmtTrialDate = (() => {
-        try {
-          const d = new Date(detailTrial.Date);
-          if (isNaN(d)) return detailTrial.Date || 'N/A';
-          return d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }).replace(/ /g, '-');
-        } catch { return detailTrial.Date || 'N/A'; }
-      })();
+      const fmtTrialDate = formatDate(detailTrial.Date) || 'N/A';
 
       const prompt = `You are a senior agronomist writing a professional herbicide field trial narrative for an official regulatory-style report (SOP/TDS validation standard).
       
@@ -2439,7 +2433,7 @@ If none are present, write "None".`;
               </div>
               <div>
                 <label className="block text-xs font-semibold text-slate-600 uppercase mb-1">Date</label>
-                <input type="date" value={bulkEditForm.Date} onChange={e => setBulkEditForm(p => ({...p, Date: e.target.value}))}
+                <input type="datetime-local" value={toDatetimeLocal(bulkEditForm.Date)} onChange={e => setBulkEditForm(p => ({...p, Date: e.target.value}))}
                   className="w-full px-3 py-2 text-sm border rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-400" />
               </div>
               <div>
@@ -2524,7 +2518,7 @@ If none are present, write "None".`;
             <div>
               <label className="block text-xs font-semibold text-slate-600 uppercase mb-1">Date</label>
               <input
-                type="date"
+                type="datetime-local"
                 value={duplicateDate}
                 onChange={e => setDuplicateDate(e.target.value)}
                 className="w-full px-3 py-2 text-sm border rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-400"
@@ -2577,7 +2571,7 @@ If none are present, write "None".`;
             </div>
             <div>
               <label className="block text-xs font-semibold text-slate-500 uppercase mb-1">Application Date *</label>
-              <input type="date" required value={formData.Date} onChange={e => setFormData({...formData, Date: e.target.value})} className="w-full px-3 py-2 text-sm border rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-400" />
+              <input type="datetime-local" required value={formData.Date} onChange={e => setFormData({...formData, Date: e.target.value})} className="w-full px-3 py-2 text-sm border rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-400" />
             </div>
             <div>
               <label className="block text-xs font-semibold text-slate-500 uppercase mb-1">Dosage / Treatment</label>
@@ -2730,7 +2724,7 @@ If none are present, write "None".`;
               <div className="grid grid-cols-2 gap-3 mt-2">
                 <div>
                   <label className="block text-xs text-orange-700 font-semibold mb-1">Finalization Date</label>
-                  <input type="date" value={formData.FinalizationDate} onChange={e => setFormData({...formData, FinalizationDate: e.target.value})} className="w-full px-3 py-2 text-sm border border-orange-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-400" />
+                  <input type="datetime-local" value={formData.FinalizationDate} onChange={e => setFormData({...formData, FinalizationDate: e.target.value})} className="w-full px-3 py-2 text-sm border border-orange-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-400" />
                 </div>
                 <div>
                   <label className="block text-xs text-orange-700 font-semibold mb-1">Final Control Duration (days)</label>
@@ -2764,7 +2758,7 @@ If none are present, write "None".`;
                   <ResultBadge result={detailTrial.Result} />
                 </div>
                 <h2 className="text-xl font-bold text-slate-800 truncate">{detailTrial.FormulationName}</h2>
-                <p className="text-xs text-slate-500 mt-0.5">{detailTrial.Date ? new Date(detailTrial.Date).toLocaleDateString() : ''} · {detailTrial.Location || 'No location'}</p>
+                <p className="text-xs text-slate-500 mt-0.5">{formatDateTime(detailTrial.Date)} · {detailTrial.Location || 'No location'}</p>
               </div>
               <div className="flex gap-2 shrink-0" ref={exportMenuRef}>
                 {/* Export dropdown */}
@@ -2884,7 +2878,7 @@ If none are present, write "None".`;
                       <Lock className="w-3.5 h-3.5 text-orange-500" />
                       <span className="font-semibold text-orange-700">Control Finalized</span>
                       {detailTrial.FinalControlDuration && <span className="text-orange-600">· {detailTrial.FinalControlDuration} days</span>}
-                      {detailTrial.FinalizationDate && <span className="text-orange-500">· {new Date(detailTrial.FinalizationDate).toLocaleDateString()}</span>}
+                      {detailTrial.FinalizationDate && <span className="text-orange-500">· {formatDateTime(detailTrial.FinalizationDate)}</span>}
                     </div>
                   )}
                   <div className="flex gap-2 pt-2 flex-wrap">
@@ -3336,7 +3330,7 @@ If none are present, write "None".`;
                       )}
                       {statsData.stats?.anovaResults?.anovaTable && (
                         <div>
-                          <h4 className="text-sm font-bold text-slate-700 mb-2 flex items-center gap-2">ANOVA Results <span className="text-[10px] font-normal text-slate-400">Computed: {new Date(statsData.stats.calculatedAt).toLocaleDateString()}</span></h4>
+                          <h4 className="text-sm font-bold text-slate-700 mb-2 flex items-center gap-2">ANOVA Results <span className="text-[10px] font-normal text-slate-400">Computed: {formatDateTime(statsData.stats.calculatedAt)}</span></h4>
                           <div className="overflow-x-auto rounded-xl border">
                             <table className="min-w-full text-xs divide-y divide-slate-200">
                               <thead className="bg-slate-50"><tr>{['Source','DF','SS','MS','F','P > F','Sig'].map(h => <th key={h} className="px-3 py-2 text-left font-semibold text-slate-500 uppercase text-[10px]">{h}</th>)}</tr></thead>
@@ -3394,7 +3388,7 @@ If none are present, write "None".`;
               {/* QR Code Tab */}
               {detailTab === 'qr' && (() => {
                 const liveUrl = buildPrintableTrialUrl(detailTrial);
-                const fmtDate = (d) => { try { return new Date(d).toLocaleDateString('en-GB',{day:'2-digit',month:'short',year:'numeric'}); } catch { return d||''; } };
+                const fmtDate = (d) => formatDate(d);
                 return (
                 <div className="flex flex-col items-center gap-4 w-full">
                   {/* Mode picker */}
@@ -3891,9 +3885,9 @@ If none are present, write "None".`;
             <div>
               <label className="block text-xs font-semibold text-slate-500 uppercase mb-1">Date</label>
               <input
-                type="date"
+                type="datetime-local"
                 required
-                value={obsForm.date}
+                value={toDatetimeLocal(obsForm.date)}
                 onChange={e => {
                   const val = e.target.value;
                   const computedDaa = activeTrial?.Date ? calculateDAA(val, activeTrial.Date) : obsForm.daa;

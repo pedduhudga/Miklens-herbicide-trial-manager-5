@@ -5,7 +5,7 @@
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import pptxgen from 'pptxgenjs';
-import { formatPhotoDate } from '../utils/dateUtils.js';
+import { formatPhotoDate, formatDate, formatDateTime } from '../utils/dateUtils.js';
 
 // ── COLORS ────────────────────────────────────────────────────────────────────
 const TEAL    = [13, 148, 136];
@@ -27,8 +27,7 @@ function validateEfficacy(data) {
 }
 function fmtDate(d) {
   if (!d) return 'N/A';
-  try { return new Date(d).toLocaleDateString('en-AU', { day: '2-digit', month: 'long', year: 'numeric' }); }
-  catch { return d; }
+  return formatDateTime(d);
 }
 function safeName(s) { return (s || 'trial').replace(/[^a-z0-9_\-]/gi, '_'); }
 function dlBlob(blob, name) {
@@ -140,7 +139,7 @@ function pdfAddFooter(doc, label) {
   for (let i = 1; i <= n; i++) {
     doc.setPage(i); doc.setFontSize(8); doc.setTextColor(150, 150, 150);
     doc.text(`${label} | Page ${i} of ${n}`, pw / 2, ph - 6, { align: 'center' });
-    doc.text(`Generated ${new Date().toLocaleDateString()}`, pw - 14, ph - 6, { align: 'right' });
+    doc.text(`Generated ${formatDateTime(new Date())}`, pw - 14, ph - 6, { align: 'right' });
   }
   doc.setTextColor(0, 0, 0);
 }
@@ -1078,7 +1077,7 @@ export async function exportTrialDocx(trial, options = {}) {
     <h2 style="color:#0d9488;font-size:14pt;border-bottom:2px solid #0d9488;padding-bottom:4px;margin-top:24px;">Field Photos (${photos.length})</h2>
     <p style="font-size:10pt;color:#64748b;font-style:italic;">Note: Photos are embedded in the HTML report export. This document lists ${photos.length} photo(s) on record.</p>
     <ul style="font-size:10pt;">
-      ${photos.map((p, i) => `<li>${p.label || `Photo ${i + 1}`}${p.date ? ` — ${new Date(p.date).toLocaleDateString()}` : ''}</li>`).join('')}
+      ${photos.map((p, i) => `<li>${p.label || `Photo ${i + 1}`}${p.date ? ` — ${formatDateTime(p.date)}` : ''}</li>`).join('')}
     </ul>` : '';
 
   const weedIdHtml = (withWeeds && weedPhotos.length) ? `

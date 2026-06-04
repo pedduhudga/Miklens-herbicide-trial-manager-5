@@ -5,6 +5,7 @@ import Modal from '../components/Modal.jsx';
 import { safeJsonParse } from '../utils/helpers.js';
 import { addOrganisation, deleteOrganisation } from '../services/dataLayer.js';
 import { Trash2, Plus, Edit, Search, Building2, Activity, X, ChevronDown, ChevronUp } from 'lucide-react';
+import { formatDateTime } from '../utils/dateUtils.js';
 
 export default function Organisations({ onMenuClick }) {
   const { state, updateState, getAppState } = useAppState();
@@ -125,7 +126,7 @@ export default function Organisations({ onMenuClick }) {
                               </div>
                               <div className="min-w-0">
                                 <p className="text-sm font-semibold text-slate-700 truncate">{t.FormulationName}</p>
-                                <p className="text-xs text-slate-400">{t.Location || '—'} · {t.Date ? new Date(t.Date).toLocaleDateString() : '—'}</p>
+                                <p className="text-xs text-slate-400">{t.Location || '—'} · {formatDateTime(t.Date) || '—'}</p>
                               </div>
                             </div>
                           );
@@ -169,7 +170,7 @@ export default function Organisations({ onMenuClick }) {
                   <input type="checkbox" checked={selectedTrialIds.includes(t.ID)} onChange={() => toggleTrial(t.ID)} className="w-4 h-4 accent-emerald-600" />
                   <div className="min-w-0">
                     <p className="text-sm font-medium text-slate-700 truncate">{t.FormulationName || 'Unknown'}</p>
-                    <p className="text-xs text-slate-400">{t.Location || '—'} · {t.Date ? new Date(t.Date).toLocaleDateString() : '—'}</p>
+                    <p className="text-xs text-slate-400">{t.Location || '—'} · {formatDateTime(t.Date) || '—'}</p>
                   </div>
                 </label>
               )) : <p className="text-sm text-slate-400 p-3 text-center">No trials available</p>}

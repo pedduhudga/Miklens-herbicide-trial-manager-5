@@ -1,6 +1,7 @@
 import React, { memo, useMemo, useCallback } from 'react';
 import { Calendar, MapPin, FlaskConical, Activity, Image, ChevronRight, Edit, MoreVertical, Eye, Copy, FolderOpen, FileDown, ScanLine, MonitorPlay, Archive, FileCode, FileSpreadsheet, Share2, BrainCircuit, Trash2, Camera, CheckCircle, Clock, Pencil } from 'lucide-react';
 import { safeJsonParse } from '../utils/helpers.js';
+import { formatDateTime } from '../utils/dateUtils.js';
 
 const RESULT_COLORS = {
   'Excellent': 'bg-emerald-100 text-emerald-700',
@@ -270,7 +271,7 @@ const TrialCard = memo(function TrialCard({
         </div>
 
         <div className="space-y-1.5 text-xs text-slate-500">
-          <div className="flex items-center gap-1.5"><Calendar className="w-3.5 h-3.5 shrink-0" /><span>{trial.Date ? new Date(trial.Date).toLocaleDateString() : '—'}</span></div>
+          <div className="flex items-center gap-1.5"><Calendar className="w-3.5 h-3.5 shrink-0" /><span>{formatDateTime(trial.Date) || '—'}</span></div>
           <div className="flex items-center gap-1.5"><MapPin className="w-3.5 h-3.5 shrink-0" /><span className="truncate">{trial.Location || '—'}</span></div>
           <div className="flex items-center gap-1.5"><FlaskConical className="w-3.5 h-3.5 shrink-0" /><span className="truncate">{trial.Dosage || '—'}</span></div>
           {trial.WeedSpecies && <div className="flex items-center gap-1.5"><Activity className="w-3.5 h-3.5 shrink-0" /><span className="truncate">{trial.WeedSpecies}</span></div>}

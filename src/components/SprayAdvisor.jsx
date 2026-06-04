@@ -237,7 +237,7 @@ export default function SprayAdvisor({ lat, lon, locationName = 'Current Locatio
                       <span className="text-2xl font-bold">{analysis.bestWindow.score}/100</span>
                     </div>
                     <p className="text-lg font-semibold">
-                      {analysis.bestWindow.dayLabel}, {analysis.bestWindow.time.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}
+                      {analysis.bestWindow.dayLabel}, {analysis.bestWindow.time.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', hour12: true })}
                     </p>
                     <div className="flex flex-wrap gap-2 mt-2 text-xs">
                       <span className="px-2 py-1 bg-white/50 rounded">
@@ -278,7 +278,7 @@ export default function SprayAdvisor({ lat, lon, locationName = 'Current Locatio
                             </span>
                             <div>
                               <p className="font-medium text-slate-800">
-                                {window.dayLabel}, {window.time.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}
+                                {window.dayLabel}, {window.time.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', hour12: true })}
                               </p>
                               <p className="text-xs text-slate-500">
                                 {window.conditions.temperature}°C • {window.conditions.windSpeed} km/h
