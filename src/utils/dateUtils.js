@@ -30,8 +30,9 @@ export function parseCustomDate(str) {
         return new Date(year, month, day, hour, minute);
     }
     // Fallback to ISO-like YYYY-MM-DD
+    // If it ends with Z, it is a UTC string; let it fall through to native parsing so timezone conversion is correct.
     const isoMatch = s.match(/^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2}))?/);
-    if (isoMatch) {
+    if (isoMatch && !s.endsWith('Z')) {
         const year = parseInt(isoMatch[1], 10);
         const month = parseInt(isoMatch[2], 10) - 1;
         const day = parseInt(isoMatch[3], 10);
@@ -83,6 +84,10 @@ export function calculateDAA (photoDate, trialDate) {
 export function hasTimeComponent(str) {
     if (!str) return false;
     const s = String(str).trim();
+    // If it is a UTC ISO string (ends with Z or contains .000), it's a legacy date-only value
+    if (s.endsWith('Z') || s.includes('.000')) {
+        return false;
+    }
     // Check if it has a space or T followed by a time: e.g. "T13:30" or " 13:30" or "10:23 AM"
     const match = s.match(/^(\d{1,2})[-/](\d{1,2})[-/](\d{4})\s+(\d{1,2}):(\d{2})/i);
     if (match) return true;
