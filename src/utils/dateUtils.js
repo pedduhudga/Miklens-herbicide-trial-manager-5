@@ -80,12 +80,28 @@ export function calculateDAA (photoDate, trialDate) {
     }
 }
 
+export function hasTimeComponent(str) {
+    if (!str) return false;
+    const s = String(str).trim();
+    // Check if it has a space or T followed by a time: e.g. "T13:30" or " 13:30" or "10:23 AM"
+    const match = s.match(/^(\d{1,2})[-/](\d{1,2})[-/](\d{4})\s+(\d{1,2}):(\d{2})/i);
+    if (match) return true;
+    const isoMatch = s.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/);
+    if (isoMatch) return true;
+    // Generic check for presence of time indicator (e.g. "12:00" or "AM/PM")
+    if (s.includes(':') || /am|pm/i.test(s)) return true;
+    return false;
+}
+
 export function formatPhotoDate(dateStr) {
     return formatDateTime(dateStr);
 }
 
 export function formatDateTime(dateInput) {
     if (!dateInput) return '';
+    if (!hasTimeComponent(dateInput)) {
+        return formatDate(dateInput);
+    }
     const d = parseCustomDate(dateInput);
     if (!d) return String(dateInput);
 
