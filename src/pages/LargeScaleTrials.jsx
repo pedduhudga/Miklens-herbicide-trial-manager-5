@@ -136,6 +136,13 @@ export default function LargeScaleTrials({ onMenuClick }) {
       }).addTo(mapRef.current);
 
       markersGroupRef.current = L.layerGroup().addTo(mapRef.current);
+
+      // Force Leaflet to re-calculate container bounds
+      setTimeout(() => {
+        if (mapRef.current) {
+          mapRef.current.invalidateSize();
+        }
+      }, 300);
     }
 
     return () => {
@@ -726,126 +733,260 @@ export default function LargeScaleTrials({ onMenuClick }) {
               </div>
             </div>
 
-            {/* Right side: Sectors List, Quadrants list, observations logger */}
+            {/* Right side: Unified Context-Aware Panel */}
             <div className="space-y-6">
               
-              {/* Sectors Manager */}
-              <div className="bg-white rounded-3xl p-6 shadow-sm border border-slate-100">
-                <div className="flex justify-between items-center mb-4">
-                  <h3 className="font-bold text-slate-800 text-sm flex items-center gap-2">
-                    <Layers className="w-4 h-4 text-emerald-600" /> Sector Zones
-                  </h3>
-                  <button
-                    onClick={() => setIsSectorModalOpen(true)}
-                    className="p-1 rounded-full hover:bg-slate-100 text-emerald-700"
-                  >
-                    <Plus className="w-4 h-4" />
-                  </button>
-                </div>
-
-                <div className="space-y-2">
-                  {sectors.map(sector => (
-                    <div
-                      key={sector.ID}
-                      onClick={() => setActiveSectorId(activeSectorId === sector.ID ? '' : sector.ID)}
-                      className={`p-3 rounded-xl border transition cursor-pointer flex justify-between items-center ${
-                        activeSectorId === sector.ID
-                          ? 'border-emerald-500 bg-emerald-50/40 ring-1 ring-emerald-500/20'
-                          : 'border-slate-100 hover:border-emerald-300'
-                      }`}
-                    >
-                      <div>
-                        <div className="font-bold text-slate-800 text-xs flex items-center gap-2">
-                          <span className="bg-emerald-100 text-emerald-800 font-bold px-1.5 py-0.5 rounded text-[10px]">{sector.Code}</span>
-                          {sector.Name}
-                        </div>
-                        <div className="text-[10px] text-slate-500 mt-1">{sector.Dosage || 'No Dosage'}</div>
-                      </div>
-                      <ChevronRight className="w-4 h-4 text-slate-400" />
+              {activeQuadrantId ? (
+                // Stake Detail & Visit History Panel
+                <div className="bg-white rounded-3xl p-6 shadow-sm border border-slate-100 space-y-4">
+                  <div className="flex justify-between items-center pb-3 border-b border-slate-100">
+                    <div>
+                      <button 
+                        onClick={() => setActiveQuadrantId('')}
+                        className="text-xs text-emerald-700 hover:text-emerald-800 font-bold flex items-center gap-1 mb-1"
+                      >
+                        &larr; Back to Directory
+                      </button>
+                      <h3 className="font-bold text-slate-800 text-base">Stake {activeQuadrantId}</h3>
                     </div>
-                  ))}
-                  {sectors.length === 0 && <p className="text-xs text-slate-400 italic py-2 text-center">No sectors configured.</p>}
-                </div>
-              </div>
-
-              {/* Quadrant Assessment Points */}
-              {activeSectorId && (
-                <div className="bg-white rounded-3xl p-6 shadow-sm border border-slate-100">
-                  <div className="flex justify-between items-center mb-4">
-                    <h3 className="font-bold text-slate-800 text-sm flex items-center gap-2">
-                      <MapPin className="w-4 h-4 text-emerald-600" /> Quadrant Stakes
-                    </h3>
-                    <button
-                      onClick={() => setIsQuadModalOpen(true)}
-                      className="p-1 rounded-full hover:bg-slate-100 text-emerald-700"
-                    >
-                      <Plus className="w-4 h-4" />
-                    </button>
+                    <span className="bg-emerald-100 text-emerald-800 text-[10px] font-bold px-2 py-0.5 rounded-full">
+                      {(visitsMap[activeQuadrantId] || []).length} Visits
+                    </span>
                   </div>
 
-                  <div className="space-y-2">
-                    {quadrants.filter(q => q.sectorId === activeSectorId).map(quad => (
-                      <div
-                        key={quad.ID}
-                        onClick={() => setActiveQuadrantId(activeQuadrantId === quad.ID ? '' : quad.ID)}
-                        className={`p-3 rounded-xl border transition cursor-pointer ${
-                          activeQuadrantId === quad.ID
-                            ? 'border-emerald-500 bg-emerald-50/40 ring-1 ring-emerald-500/20'
-                            : 'border-slate-100 hover:border-emerald-300'
-                        }`}
-                      >
-                        <div className="flex justify-between items-center">
-                          <div className="font-bold text-slate-800 text-xs">{quad.ID}</div>
-                          <span className="text-[10px] text-slate-400">{(visitsMap[quad.ID] || []).length} visits</span>
+                  {/* Quadrant details (Replication, Soil, etc.) */}
+                  {(() => {
+                    const quad = quadrants.find(q => q.ID === activeQuadrantId);
+                    if (!quad) return null;
+                    const sector = sectors.find(s => s.ID === quad.sectorId);
+                    return (
+                      <div className="space-y-3 text-xs">
+                        <div className="grid grid-cols-2 gap-2 text-slate-600">
+                          <div><span className="font-bold">Sector:</span> {sector?.Name || 'Unknown'}</div>
+                          <div><span className="font-bold">Rep / Plot:</span> {quad.Replication || 'N/A'} / {quad.PlotNumber || 'N/A'}</div>
+                          <div className="col-span-2"><span className="font-bold">GPS Coordinates:</span> {quad.Lat}, {quad.Lon}</div>
                         </div>
-                        <div className="text-[10px] text-slate-400 mt-1">{quad.Lat}, {quad.Lon}</div>
 
-                        {activeQuadrantId === quad.ID && (
-                          <div className="mt-3 pt-3 border-t border-slate-100 space-y-2">
-                            <div className="flex justify-between items-center mb-2">
-                              <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Timeline Visits</span>
-                              <button
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  setIsVisitModalOpen(true);
-                                }}
-                                className="px-2 py-0.5 bg-emerald-700 text-white text-[10px] rounded hover:bg-emerald-800 transition"
-                              >
-                                Log Visit
-                              </button>
+                        {/* Soil summary */}
+                        {(quad.SoilPH || quad.SoilTexture || quad.SoilClay) && (
+                          <div className="bg-slate-50 p-2.5 rounded-xl border border-slate-100">
+                            <span className="font-bold text-slate-700 text-[10px] uppercase block mb-1">Soil Profile</span>
+                            <div className="grid grid-cols-2 gap-1 text-[11px] text-slate-600">
+                              {quad.SoilPH && <div>pH: {quad.SoilPH}</div>}
+                              {quad.SoilTexture && <div>Texture: {quad.SoilTexture}</div>}
+                              {quad.SoilClay && <div>Clay: {quad.SoilClay}%</div>}
+                              {quad.SoilSand && <div>Sand: {quad.SoilSand}%</div>}
+                              {quad.SoilOC && <div>Org Carbon: {quad.SoilOC}%</div>}
                             </div>
-                            
-                            {(visitsMap[quad.ID] || []).map((visit, vIdx) => (
-                              <div key={visit.ID} className="bg-slate-50 p-2 rounded-lg text-xs flex justify-between items-center">
-                                <div>
-                                  <span className="font-bold text-slate-700">DAA {visit.daa}</span>
-                                  <span className="text-slate-400 text-[10px] ml-2">{visit.date}</span>
-                                  <div className="text-[10px] text-slate-500 mt-0.5">
-                                    Obs: {visit.weedObservations?.map(wo => `${wo.species} (${wo.cover}%)`).join(', ') || 'No weeds'}
-                                  </div>
-                                </div>
-                                <button
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    handleDeleteVisit(visit.ID, quad.ID);
-                                  }}
-                                  className="text-red-500 hover:text-red-700"
-                                >
-                                  <Trash2 className="w-3.5 h-3.5" />
-                                </button>
-                              </div>
-                            ))}
                           </div>
                         )}
+
+                        {quad.Notes && (
+                          <div className="bg-slate-50 p-2.5 rounded-xl border border-slate-100 text-[11px] text-slate-600">
+                            <span className="font-bold text-slate-700 text-[10px] uppercase block mb-0.5">Field Notes</span>
+                            {quad.Notes}
+                          </div>
+                        )}
+
+                        {/* Timeline and Log Action */}
+                        <div className="pt-2">
+                          <button
+                            onClick={() => setIsVisitModalOpen(true)}
+                            className="w-full py-2 bg-emerald-700 text-white text-xs font-bold rounded-xl hover:bg-emerald-800 transition flex items-center justify-center gap-1.5 shadow-sm"
+                          >
+                            <Plus className="w-4 h-4" /> Log Observation Visit
+                          </button>
+                        </div>
+
+                        {/* Visits timeline */}
+                        <div className="space-y-3 mt-4 pt-3 border-t border-slate-100">
+                          <h4 className="font-bold text-slate-700 text-xs uppercase tracking-wider">Assessment Timeline</h4>
+                          
+                          {(visitsMap[activeQuadrantId] || []).length > 0 ? (
+                            <div className="relative border-l-2 border-slate-100 pl-4 ml-2 space-y-4">
+                              {(visitsMap[activeQuadrantId] || []).map((visit) => (
+                                <div key={visit.ID} className="relative">
+                                  {/* Timeline marker */}
+                                  <div className="absolute -left-[21px] top-1.5 w-2.5 h-2.5 rounded-full bg-emerald-600 border-2 border-white ring-4 ring-emerald-50" />
+                                  
+                                  <div className="bg-slate-50 hover:bg-slate-100/70 p-3 rounded-xl border border-slate-100 transition space-y-2">
+                                    <div className="flex justify-between items-center">
+                                      <span className="font-bold text-emerald-800">DAA {visit.daa}</span>
+                                      <span className="text-[10px] text-slate-400 font-semibold">{visit.date}</span>
+                                    </div>
+
+                                    {/* Observations */}
+                                    <div className="text-[11px] text-slate-600 space-y-1">
+                                      {visit.cropPhytotoxicity !== undefined && (
+                                        <div>Crop Injury: <span className="font-bold text-slate-800">{visit.cropPhytotoxicity}%</span></div>
+                                      )}
+                                      {visit.yieldValue !== undefined && visit.yieldValue !== '' && (
+                                        <div>Yield: <span className="font-bold text-slate-800">{visit.yieldValue}</span></div>
+                                      )}
+                                      {visit.weedGrowthStage && (
+                                        <div>Weed Stage: <span className="font-bold text-slate-800">{visit.weedGrowthStage} ({visit.overallWeedGrowthStage})</span></div>
+                                      )}
+                                      
+                                      <div className="bg-white p-2 rounded-lg border border-slate-100/50 mt-1">
+                                        <div className="font-semibold text-slate-500 text-[10px] mb-1">Weed Canopy:</div>
+                                        <div className="flex flex-wrap gap-1">
+                                          {visit.weedObservations?.map((wo, wi) => (
+                                            <span key={wi} className="bg-slate-50 px-2 py-0.5 rounded text-[10px] text-slate-700 border border-slate-100">
+                                              {wo.species}: <span className="font-bold">{wo.cover}%</span> (BBCH {wo.bbch})
+                                            </span>
+                                          ))}
+                                          {(!visit.weedObservations || visit.weedObservations.length === 0) && (
+                                            <span className="text-slate-400 italic text-[10px]">No weeds observed</span>
+                                          )}
+                                        </div>
+                                      </div>
+                                    </div>
+
+                                    {visit.photos && visit.photos.length > 0 && (
+                                      <div className="flex gap-1.5 overflow-x-auto py-1">
+                                        {visit.photos.map((ph, pIdx) => (
+                                          <a key={pIdx} href={ph.url} target="_blank" rel="noopener noreferrer" className="relative shrink-0 w-16 h-12 rounded overflow-hidden border">
+                                            <img src={ph.url} alt={ph.name} className="w-full h-full object-cover" />
+                                          </a>
+                                        ))}
+                                      </div>
+                                    )}
+
+                                    {/* Notes & Conclusion */}
+                                    {(visit.notes || visit.conclusion) && (
+                                      <div className="text-[10px] text-slate-500 border-t border-slate-100/50 pt-1.5">
+                                        {visit.notes && <div><strong>Notes:</strong> {visit.notes}</div>}
+                                        {visit.conclusion && <div><strong>Conclusion:</strong> {visit.conclusion}</div>}
+                                      </div>
+                                    )}
+
+                                    <div className="flex justify-end pt-1">
+                                      <button
+                                        type="button"
+                                        onClick={() => handleDeleteVisit(visit.ID, activeQuadrantId)}
+                                        className="text-red-500 hover:text-red-700 text-[10px] font-bold flex items-center gap-0.5"
+                                      >
+                                        <Trash2 className="w-3.5 h-3.5" /> Delete Visit
+                                      </button>
+                                    </div>
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          ) : (
+                            <p className="text-xs text-slate-400 italic py-2 text-center">No observation visits logged yet.</p>
+                          )}
+                        </div>
                       </div>
-                    ))}
-                    {quadrants.filter(q => q.sectorId === activeSectorId).length === 0 && (
-                      <p className="text-xs text-slate-400 italic py-2 text-center">No quadrants in this sector.</p>
-                    )}
+                    );
+                  })()}
+                </div>
+              ) : (
+                // Sector & Quadrant Directory Panel (No quadrant selected)
+                <div className="space-y-6">
+                  {/* Sectors Manager */}
+                  <div className="bg-white rounded-3xl p-6 shadow-sm border border-slate-100">
+                    <div className="flex justify-between items-center mb-4">
+                      <h3 className="font-bold text-slate-800 text-sm flex items-center gap-2">
+                        <Layers className="w-4 h-4 text-emerald-600" /> Sector Zones (Treatments)
+                      </h3>
+                      <button
+                        onClick={() => setIsSectorModalOpen(true)}
+                        className="p-1 rounded-full hover:bg-slate-100 text-emerald-700"
+                      >
+                        <Plus className="w-4 h-4" />
+                      </button>
+                    </div>
+
+                    <div className="space-y-2">
+                      {sectors.map(sector => {
+                        const sQuads = quadrants.filter(q => q.sectorId === sector.ID);
+                        return (
+                          <div
+                            key={sector.ID}
+                            onClick={() => setActiveSectorId(activeSectorId === sector.ID ? '' : sector.ID)}
+                            className={`p-3 rounded-xl border transition cursor-pointer flex justify-between items-center ${
+                              activeSectorId === sector.ID
+                                ? 'border-emerald-500 bg-emerald-50/40 ring-1 ring-emerald-500/20'
+                                : 'border-slate-100 hover:border-emerald-300'
+                            }`}
+                          >
+                            <div>
+                              <div className="font-bold text-slate-800 text-xs flex items-center gap-2">
+                                <span className="bg-emerald-100 text-emerald-800 font-bold px-1.5 py-0.5 rounded text-[10px]">{sector.Code}</span>
+                                {sector.Name}
+                              </div>
+                              <div className="text-[10px] text-slate-500 mt-1">
+                                {sector.Dosage || 'No Dosage'} {sector.ApplicationTiming ? `| Timing: ${sector.ApplicationTiming}` : ''}
+                              </div>
+                            </div>
+                            <div className="flex items-center gap-1.5">
+                              <span className="text-[10px] text-slate-400 bg-slate-100 px-1.5 py-0.5 rounded">{sQuads.length} Stakes</span>
+                              <ChevronRight className="w-4 h-4 text-slate-400" />
+                            </div>
+                          </div>
+                        );
+                      })}
+                      {sectors.length === 0 && <p className="text-xs text-slate-400 italic py-2 text-center">No sectors configured.</p>}
+                    </div>
                   </div>
+
+                  {/* Quadrant Stakes List (Linked to chosen Sector) */}
+                  {activeSectorId && (
+                    <div className="bg-white rounded-3xl p-6 shadow-sm border border-slate-100">
+                      <div className="flex justify-between items-center mb-4">
+                        <h3 className="font-bold text-slate-800 text-sm flex items-center gap-2">
+                          <MapPin className="w-4 h-4 text-emerald-600" /> Quadrant Stakes inside {sectors.find(s => s.ID === activeSectorId)?.Code}
+                        </h3>
+                        <button
+                          onClick={() => setIsQuadModalOpen(true)}
+                          className="p-1 rounded-full hover:bg-slate-100 text-emerald-700"
+                        >
+                          <Plus className="w-4 h-4" />
+                        </button>
+                      </div>
+
+                      <div className="grid grid-cols-1 gap-2 max-h-80 overflow-y-auto pr-1">
+                        {quadrants.filter(q => q.sectorId === activeSectorId).map(quad => {
+                          const vCount = (visitsMap[quad.ID] || []).length;
+                          return (
+                            <div
+                              key={quad.ID}
+                              onClick={() => {
+                                setActiveQuadrantId(quad.ID);
+                                // Center map on this quad coordinate
+                                const lat = parseFloat(quad.Lat);
+                                const lon = parseFloat(quad.Lon);
+                                if (!isNaN(lat) && !isNaN(lon) && mapRef.current) {
+                                  mapRef.current.setView([lat, lon], 18);
+                                }
+                              }}
+                              className="p-3 rounded-xl border border-slate-100 hover:border-emerald-300 transition cursor-pointer flex justify-between items-center"
+                            >
+                              <div>
+                                <div className="font-bold text-slate-800 text-xs">{quad.ID}</div>
+                                <div className="text-[10px] text-slate-400 mt-0.5">{quad.Lat}, {quad.Lon}</div>
+                                {quad.Replication && (
+                                  <div className="text-[9px] text-slate-500 font-semibold mt-0.5">Rep: {quad.Replication} | Plot: {quad.PlotNumber || 'N/A'}</div>
+                                )}
+                              </div>
+                              <div className="flex items-center gap-1">
+                                <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${vCount > 0 ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-100 text-slate-400'}`}>
+                                  {vCount} visits
+                                </span>
+                                <ChevronRight className="w-3.5 h-3.5 text-slate-400" />
+                              </div>
+                            </div>
+                          );
+                        })}
+                        {quadrants.filter(q => q.sectorId === activeSectorId).length === 0 && (
+                          <p className="text-xs text-slate-400 italic py-2 text-center">No quadrants in this sector.</p>
+                        )}
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
-
             </div>
           </div>
         ) : (
