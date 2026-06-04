@@ -1367,7 +1367,6 @@ export default function Trials({ onMenuClick }) {
   const navigateToCompare = () => {
     updateState({ selectedTrials: trials.filter(t => selectedForBulk.has(t.ID)) });
     navigate('/compare');
-    clearBulk();
   };
   const handleBulkDelete = async () => {
     if (!window.confirm(`Delete ${selectedForBulk.size} trial(s)?`)) return;
