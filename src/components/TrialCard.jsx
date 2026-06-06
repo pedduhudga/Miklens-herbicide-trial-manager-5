@@ -31,6 +31,7 @@ function ResultBadge({ result }) {
 const TrialCard = memo(function TrialCard({
   trial,
   project,
+  subTrialLabel,
   isSelected,
   isMenuOpen,
   onToggleBulk,
@@ -201,7 +202,14 @@ const TrialCard = memo(function TrialCard({
       <div className="p-4 pt-10 flex-1 flex flex-col">
         <div className="flex items-start justify-between gap-3 mb-2">
           <div className="min-w-0">
-            <h3 className="font-bold text-slate-800 truncate" title={trial.FormulationName}>{trial.FormulationName || 'Untitled'}</h3>
+            <h3 className="font-bold text-slate-800 truncate" title={trial.FormulationName}>
+              {subTrialLabel && (
+                <span className="bg-emerald-600 text-white text-[10px] font-extrabold px-1.5 py-0.5 rounded-md mr-1.5 align-middle shadow-sm">
+                  {subTrialLabel}
+                </span>
+              )}
+              <span className="align-middle">{trial.FormulationName || 'Untitled'}</span>
+            </h3>
             <div className="flex items-center gap-2 mt-0.5">
               {trial.IsControl && <span className="text-[10px] bg-purple-100 text-purple-700 px-1.5 py-0.5 rounded">Control</span>}
               {trial.IsStandardCheck && <span className="text-[10px] bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded">Standard</span>}

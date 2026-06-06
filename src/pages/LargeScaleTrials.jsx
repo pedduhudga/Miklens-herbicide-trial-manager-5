@@ -134,6 +134,7 @@ export default function LargeScaleTrials({ onMenuClick }) {
   const [duplicateDosage, setDuplicateDosage] = useState('');
   const [weedIdLoading, setWeedIdLoading] = useState(false);
   const [weedIdResult, setWeedIdResult] = useState(null);
+  const [gpsAccuracy, setGpsAccuracy] = useState(null);
 
   const [viewMode, setViewMode] = useState('gis'); // 'gis' | 'spots'
   const [search, setSearch] = useState('');
@@ -878,10 +879,11 @@ export default function LargeScaleTrials({ onMenuClick }) {
     if (!L || !mapContainerRef.current) return;
 
     if (!mapRef.current) {
-      mapRef.current = L.map(mapContainerRef.current).setView([20.5937, 78.9629], 5);
-      L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
-        attribution: 'Tiles &copy; Esri &mdash; Source: Esri, i-cubed, USDA, USGS, AEX, GeoEye, Getmapping, Aerogrid, IGN, IGP, UPR-EGP, and the GIS User Community',
-        maxZoom: 20
+      mapRef.current = L.map(mapContainerRef.current, { maxZoom: 22 }).setView([20.5937, 78.9629], 5);
+      L.tileLayer('http://{s}.google.com/vt/lyrs=y&x={x}&y={y}&z={z}', {
+        maxZoom: 22,
+        subdomains: ['mt0', 'mt1', 'mt2', 'mt3'],
+        attribution: '&copy; Google Maps'
       }).addTo(mapRef.current);
 
       markersGroupRef.current = L.layerGroup().addTo(mapRef.current);
@@ -950,20 +952,37 @@ export default function LargeScaleTrials({ onMenuClick }) {
 
   // Fetch coordinates
   const handleGetGPS = () => {
-    if (!navigator.geolocation) return;
+    if (!navigator.geolocation) {
+      window.dispatchEvent(new CustomEvent('app:toast', { detail: { msg: 'Geolocation not supported by this browser.', type: 'error' } }));
+      return;
+    }
     setGpsFetching(true);
+    setGpsAccuracy(null);
     navigator.geolocation.getCurrentPosition(
       (pos) => {
-        const { latitude, longitude } = pos.coords;
-        setSubTrialForm(prev => ({ ...prev, Lat: latitude.toFixed(6), Lon: longitude.toFixed(6) }));
+        const { latitude, longitude, accuracy } = pos.coords;
+        setSubTrialForm(prev => ({ ...prev, Lat: latitude.toFixed(8), Lon: longitude.toFixed(8) }));
+        setGpsAccuracy(accuracy);
         setGpsFetching(false);
-        window.dispatchEvent(new CustomEvent('app:toast', { detail: { msg: 'GPS coordinates updated!', type: 'success' } }));
+        window.dispatchEvent(new CustomEvent('app:toast', { detail: { msg: `GPS coordinates updated! (Accuracy: ±${accuracy.toFixed(1)}m)`, type: 'success' } }));
       },
-      () => {
+      (err) => {
         setGpsFetching(false);
-        window.dispatchEvent(new CustomEvent('app:toast', { detail: { msg: 'Unable to retrieve location.', type: 'error' } }));
+        let errorMsg = 'Unable to retrieve location.';
+        if (err.code === err.PERMISSION_DENIED) {
+          errorMsg = 'GPS Permission Denied. Please enable location services.';
+        } else if (err.code === err.POSITION_UNAVAILABLE) {
+          errorMsg = 'GPS Position Unavailable. Try moving outside or checking settings.';
+        } else if (err.code === err.TIMEOUT) {
+          errorMsg = 'GPS Timeout. Trying again might help.';
+        }
+        window.dispatchEvent(new CustomEvent('app:toast', { detail: { msg: errorMsg, type: 'error' } }));
       },
-      { enableHighAccuracy: true }
+      {
+        enableHighAccuracy: true,
+        timeout: 20000,
+        maximumAge: 0
+      }
     );
   };
 
@@ -2212,14 +2231,20 @@ export default function LargeScaleTrials({ onMenuClick }) {
                   <div className="flex-grow overflow-y-auto pr-1">
                     {filteredSubTrials.length > 0 ? (
                       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                        {filteredSubTrials.map(st => (
-                          <TrialCard
-                            key={st.ID}
-                            trial={st}
-                            project={activeProject}
-                            isSelected={selectedForBulk.has(st.ID)}
-                            isMenuOpen={openCardMenu === st.ID}
-                            onToggleBulk={toggleBulk}
+                        {filteredSubTrials.map((st, idx) => {
+                          const sortedSubTrialsByDate = [...subTrials].sort((a, b) => new Date(a.CreatedAt || a.Date || 0) - new Date(b.CreatedAt || b.Date || 0));
+                          const subIdx = sortedSubTrialsByDate.findIndex(t => t.ID === st.ID);
+                          const subTrialLabel = `Sub ${subIdx >= 0 ? subIdx + 1 : idx + 1}`;
+
+                          return (
+                            <TrialCard
+                              key={st.ID}
+                              trial={st}
+                              project={activeProject}
+                              subTrialLabel={subTrialLabel}
+                              isSelected={selectedForBulk.has(st.ID)}
+                              isMenuOpen={openCardMenu === st.ID}
+                              onToggleBulk={toggleBulk}
                             onToggleMenu={toggleMenu}
                             onViewDetails={onViewDetails}
                             onEdit={onEdit}
@@ -2241,7 +2266,7 @@ export default function LargeScaleTrials({ onMenuClick }) {
                             onQuickGalleryUpload={onQuickGalleryUpload}
                             onMarkComplete={onMarkComplete}
                           />
-                        ))}
+                        )})}
                       </div>
                     ) : (
                       <div className="h-full flex flex-col items-center justify-center text-center text-slate-400 italic py-24 border-2 border-dashed rounded-3xl border-slate-100">
@@ -2426,6 +2451,12 @@ export default function LargeScaleTrials({ onMenuClick }) {
                 />
               </div>
             </div>
+            {gpsAccuracy !== null && (
+              <div className="mt-2 text-[10px] text-emerald-700 font-bold bg-emerald-50 px-2 py-1 rounded border border-emerald-200/50 flex items-center justify-between">
+                <span>Accuracy:</span>
+                <span>±{gpsAccuracy.toFixed(1)} meters</span>
+              </div>
+            )}
           </div>
 
           {/* Weather Block */}
