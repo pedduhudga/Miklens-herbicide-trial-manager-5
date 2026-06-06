@@ -56,7 +56,7 @@ const emptySubTrialForm = () => ({
   IsControl: false,
   IsStandardCheck: false,
   IsCompleted: false,
-  Replication: 'R1',
+  Replication: '',
   PlotNumber: '',
   Temperature: '',
   Humidity: '',
@@ -148,6 +148,7 @@ export default function LargeScaleTrials({ onMenuClick }) {
   const fileInputRef = useRef(null);
   const qrCanvasRef = useRef(null);
   const [qrGenerated, setQrGenerated] = useState(false);
+  const [qrMode, setQrMode] = useState('offline'); // 'offline' | 'online'
 
   // Map refs
   const mapContainerRef = useRef(null);
@@ -793,6 +794,89 @@ export default function LargeScaleTrials({ onMenuClick }) {
       }, getAppState);
     } catch (e) {}
   };
+  
+  const buildPrintableTrialUrl = (trial) => {
+    const appBase = window.location.origin + window.location.pathname;
+    return `${appBase}#/live/${trial.ID}`;
+  };
+
+  const buildQrText = (trial, mode) => {
+    if (mode === 'online') {
+      return buildPrintableTrialUrl(trial);
+    }
+    const fields = state.settings?.qrOfflineFields || ['FormulationName','Dosage','WeedSpecies','Date','Location'];
+    const fmt = (d) => formatDate(d);
+    const lines = [`MIKLENS-TRIAL`];
+    lines.push(`ID:${trial.ID}`);
+    if (fields.includes('FormulationName') && trial.FormulationName) lines.push(`Product:${trial.FormulationName}`);
+    if (fields.includes('InvestigatorName') && trial.InvestigatorName) lines.push(`Inv:${trial.InvestigatorName}`);
+    if (fields.includes('Date') && trial.Date) lines.push(`Date:${fmt(trial.Date)}`);
+    if (fields.includes('Dosage') && trial.Dosage) lines.push(`Dose:${trial.Dosage}`);
+    if (fields.includes('Location') && trial.Location) lines.push(`Loc:${trial.Location}`);
+    if (fields.includes('WeedSpecies') && trial.WeedSpecies) lines.push(`Weeds:${trial.WeedSpecies}`);
+    if (fields.includes('Result') && trial.Result) lines.push(`Result:${trial.Result}`);
+    if (trial.Replication) lines.push(`Rep:${trial.Replication}`);
+    return lines.join('\n');
+  };
+
+  const generateQR = async (trial, mode) => {
+    if (!trial || !qrCanvasRef.current) return;
+    setQrGenerated(false);
+    const resolvedMode = mode || qrMode;
+    const qrText = buildQrText(trial, resolvedMode);
+    try {
+      await QRCodeLib.toCanvas(qrCanvasRef.current, qrText, {
+        width: 220,
+        margin: 2,
+        color: { dark: '#1e293b', light: '#ffffff' },
+        errorCorrectionLevel: 'H'
+      });
+      setQrGenerated(true);
+    } catch (e) {
+      console.error('QR gen error', e);
+      window.dispatchEvent(new CustomEvent('app:toast', { detail: { msg: 'QR generation failed: ' + e.message, type: 'error' } }));
+    }
+  };
+
+  const downloadQR = () => {
+    if (!qrCanvasRef.current) return;
+    const a = document.createElement('a');
+    a.download = `QR_${activeSubTrial?.FormulationName || 'subtrial'}_${qrMode}.png`;
+    a.href = qrCanvasRef.current.toDataURL('image/png');
+    a.click();
+  };
+
+  const handleAnalyzeSinglePhoto = async (photoSrc, photoDate) => {
+    if (!activeSubTrial || aiGenRunning) return;
+    setAiGenRunning(true);
+    const trialDate = new Date(activeSubTrial.Date);
+    let daa = 0;
+    if (photoDate) {
+      const pd = new Date(photoDate);
+      daa = Math.round((pd.getTime() - trialDate.getTime()) / (1000 * 60 * 60 * 24));
+      daa = daa >= 0 ? daa : 0;
+    }
+
+    window.dispatchEvent(new CustomEvent('app:toast', { detail: { msg: `Analyzing photo with AI (DAA ${daa})...`, type: 'info' } }));
+    try {
+      const result = await analyzePhoto(photoSrc, {
+        treatment: activeSubTrial.FormulationName,
+        daa,
+        rep: activeSubTrial.Replication || 1
+      }, (msg) => window.dispatchEvent(new CustomEvent('app:toast', { detail: { msg, type: 'info' } })));
+
+      if (result.success) {
+        await createObservationFromAI(activeSubTrial, daa, result.data, photoDate, photoSrc);
+        window.dispatchEvent(new CustomEvent('app:toast', { detail: { msg: `AI complete! Detected ${result.data.weeds?.length || 0} weed species at DAA ${daa}. Observation saved.`, type: 'success' } }));
+      } else {
+        window.dispatchEvent(new CustomEvent('app:toast', { detail: { msg: 'AI analysis failed: ' + (result.error || 'Unknown error'), type: 'error' } }));
+      }
+    } catch (e) {
+      window.dispatchEvent(new CustomEvent('app:toast', { detail: { msg: 'AI analysis error: ' + e.message, type: 'error' } }));
+    } finally {
+      setAiGenRunning(false);
+    }
+  };
 
   const generateAISummary = async () => {
     if (!activeSubTrial) return;
@@ -899,7 +983,7 @@ export default function LargeScaleTrials({ onMenuClick }) {
         mapRef.current = null;
       }
     };
-  }, [dashboardTab, activeProjectId]);
+  }, [dashboardTab, activeProjectId, selectedSubTrialId, viewMode]);
 
   // Draw sub-trial markers on Map
   useEffect(() => {
@@ -1037,25 +1121,69 @@ export default function LargeScaleTrials({ onMenuClick }) {
     }
   };
 
-  // Create Project Workspace
+  // Edit & Delete Project Workspaces
+  const handleEditProjectClick = () => {
+    if (!activeProject) return;
+    setProjectForm({
+      ID: activeProject.ID,
+      Name: activeProject.Name || '',
+      Crop: activeProject.Crop || '',
+      Location: activeProject.Location || '',
+      Investigator: activeProject.Investigator || '',
+      TargetWeeds: activeProject.TargetWeeds || '',
+      GPSBounds: activeProject.GPSBounds || ''
+    });
+    setIsProjectModalOpen(true);
+  };
+
+  const handleDeleteProjectClick = async () => {
+    if (!activeProject) return;
+    if (!window.confirm(`Are you absolutely sure you want to delete the Master Workspace "${activeProject.Name}"?\n\nThis will permanently delete this workspace and ALL its (${subTrials.length}) sub-trial spots and observation logs. This action cannot be undone.`)) return;
+    try {
+      for (const st of subTrials) {
+        await deleteTrial({ ID: st.ID }, getAppState);
+      }
+      await deleteProject({ ID: activeProjectId }, getAppState);
+      updateState({
+        projects: state.projects.filter(p => p.ID !== activeProjectId),
+        trials: state.trials.filter(t => t.ProjectID !== activeProjectId)
+      });
+      setActiveProjectId('');
+      setSelectedSubTrialId('');
+      window.dispatchEvent(new CustomEvent('app:toast', { detail: { msg: 'Master Workspace and all sub-trials deleted.', type: 'success' } }));
+    } catch (err) {
+      console.error(err);
+      window.dispatchEvent(new CustomEvent('app:toast', { detail: { msg: 'Failed to delete workspace.', type: 'error' } }));
+    }
+  };
+
+  // Create or Update Project Workspace
   const handleSaveProject = async (e) => {
     e.preventDefault();
+    const isEdit = !!projectForm.ID;
     const payload = {
+      ...(isEdit ? activeProject : {}),
       ...projectForm,
       Design: 'LargeScale',
       Status: 'Active',
-      CreatedAt: new Date().toISOString()
+      UpdatedAt: new Date().toISOString(),
+      ...(isEdit ? {} : { CreatedAt: new Date().toISOString() })
     };
     try {
       const res = await addProject(payload, getAppState);
-      const updatedList = [...(state.projects || []), res];
-      updateState({ projects: updatedList });
-      setActiveProjectId(res.ID);
+      if (isEdit) {
+        updateState({ projects: state.projects.map(p => p.ID === payload.ID ? payload : p) });
+        window.dispatchEvent(new CustomEvent('app:toast', { detail: { msg: 'Master Workspace Updated!', type: 'success' } }));
+      } else {
+        const updatedList = [...(state.projects || []), res];
+        updateState({ projects: updatedList });
+        setActiveProjectId(res.ID);
+        window.dispatchEvent(new CustomEvent('app:toast', { detail: { msg: 'Large Field Trial Workspace Created!', type: 'success' } }));
+      }
       setIsProjectModalOpen(false);
       setProjectForm({ Name: '', Crop: '', Location: '', Investigator: '', TargetWeeds: '', GPSBounds: '' });
-      window.dispatchEvent(new CustomEvent('app:toast', { detail: { msg: 'Large Field Trial Workspace Created!', type: 'success' } }));
     } catch {
-      window.dispatchEvent(new CustomEvent('app:toast', { detail: { msg: 'Failed to create workspace.', type: 'error' } }));
+      window.dispatchEvent(new CustomEvent('app:toast', { detail: { msg: `Failed to ${isEdit ? 'update' : 'save'} workspace.`, type: 'error' } }));
     }
   };
 
@@ -1396,17 +1524,37 @@ export default function LargeScaleTrials({ onMenuClick }) {
             <Compass className="text-emerald-700 h-6 w-6 shrink-0" />
             <div>
               <label className="block text-[10px] uppercase tracking-wider font-extrabold text-emerald-800">Large Scale Workspace</label>
-              <select
-                value={activeProjectId}
-                onChange={e => {
-                  setActiveProjectId(e.target.value);
-                  setSelectedSubTrialId('');
-                }}
-                className="bg-transparent border-b border-emerald-800/20 text-slate-800 font-bold focus:outline-none focus:border-emerald-700 pr-4 text-sm"
-              >
-                <option value="">-- Select Master Project --</option>
-                {masterProjects.map(p => <option key={p.ID} value={p.ID}>{p.Name}</option>)}
-              </select>
+              <div className="flex items-center gap-2">
+                <select
+                  value={activeProjectId}
+                  onChange={e => {
+                    setActiveProjectId(e.target.value);
+                    setSelectedSubTrialId('');
+                  }}
+                  className="bg-transparent border-b border-emerald-800/20 text-slate-800 font-bold focus:outline-none focus:border-emerald-700 pr-4 text-sm"
+                >
+                  <option value="">-- Select Master Project --</option>
+                  {masterProjects.map(p => <option key={p.ID} value={p.ID}>{p.Name}</option>)}
+                </select>
+                {activeProjectId && (
+                  <div className="flex gap-1 shrink-0">
+                    <button
+                      onClick={handleEditProjectClick}
+                      title="Edit Master Workspace"
+                      className="p-1 hover:bg-slate-100 rounded-lg text-slate-500 hover:text-emerald-700 transition"
+                    >
+                      <Edit className="w-3.5 h-3.5" />
+                    </button>
+                    <button
+                      onClick={handleDeleteProjectClick}
+                      title="Delete Master Workspace"
+                      className="p-1 hover:bg-slate-100 rounded-lg text-slate-500 hover:text-red-600 transition"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                )}
+              </div>
             </div>
           </div>
 
@@ -1918,17 +2066,171 @@ export default function LargeScaleTrials({ onMenuClick }) {
                   )}
 
                   {/* QR CODE TAB */}
-                  {detailTab === 'qr' && (
-                    <div className="space-y-4 flex flex-col items-center justify-center p-6 bg-slate-50 rounded-2xl border">
-                      <span className="text-[10px] font-bold text-slate-400 uppercase block text-center">Printable QR Trial Spot Code</span>
-                      <div className="p-4 border-2 border-emerald-600 rounded-2xl bg-white shadow-md">
-                        <canvas ref={qrCanvasRef} className="w-44 h-44 block" />
+                  {detailTab === 'qr' && (() => {
+                    const liveUrl = buildPrintableTrialUrl(activeSubTrial);
+                    const fmtDate = (d) => formatDate(d);
+                    return (
+                    <div className="flex flex-col items-center gap-4 w-full">
+                      {/* Mode picker */}
+                      <div className="flex w-full rounded-xl overflow-hidden border border-slate-200">
+                        {['offline','online'].map(m => (
+                          <button key={m}
+                            onClick={() => { setQrMode(m); setQrGenerated(false); }}
+                            className={`flex-1 py-2 text-sm font-semibold capitalize transition-colors ${
+                              qrMode === m ? 'bg-emerald-600 text-white' : 'bg-white text-slate-500 hover:bg-slate-50'
+                            }`}>
+                            {m === 'offline' ? '📦 Offline QR' : '🌐 Online / Live QR'}
+                          </button>
+                        ))}
                       </div>
-                      <p className="text-xs text-slate-400 text-center max-w-sm">
-                        Scan code with any mobile device to view or log live data for this spot in the field.
-                      </p>
+
+                      {/* Canvas */}
+                      <div className="bg-white border-2 border-slate-200 rounded-2xl p-4 shadow-sm">
+                        <canvas ref={qrCanvasRef} className="block mx-auto" />
+                        {!qrGenerated && (
+                          <div className="w-[220px] h-[220px] flex items-center justify-center text-slate-300 text-xs">
+                            Click Generate to create QR
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Actions */}
+                      <div className="flex gap-3">
+                        <button onClick={() => generateQR(activeSubTrial, qrMode)}
+                          className="flex items-center gap-2 px-4 py-2 bg-emerald-600 text-white rounded-lg text-sm font-semibold hover:bg-emerald-700">
+                          <Plus className="w-4 h-4" /> Generate QR
+                        </button>
+                        {qrGenerated && (
+                          <button onClick={downloadQR}
+                            className="flex items-center gap-2 px-4 py-2 bg-slate-100 text-slate-700 rounded-lg text-sm font-semibold hover:bg-slate-200">
+                            <Download className="w-4 h-4" /> Download PNG
+                          </button>
+                        )}
+                      </div>
+
+                      {/* Info panel */}
+                      {qrMode === 'offline' ? (
+                        <div className="w-full bg-slate-50 rounded-xl p-4 text-xs text-slate-600 border space-y-1">
+                          <p className="font-bold text-slate-700 mb-2">📦 Offline QR — encoded data:</p>
+                          <p><span className="font-semibold text-slate-500">Trial ID:</span> <span className="font-mono">{activeSubTrial?.ID}</span></p>
+                          <p><span className="font-semibold text-slate-500">Product:</span> {activeSubTrial?.FormulationName}</p>
+                          <p><span className="font-semibold text-slate-500">Date:</span> {fmtDate(activeSubTrial?.Date)}</p>
+                          <p><span className="font-semibold text-slate-500">Dosage:</span> {activeSubTrial?.Dosage || '—'}</p>
+                          <p><span className="font-semibold text-slate-500">Location:</span> {activeSubTrial?.Location || '—'}</p>
+                          <p><span className="font-semibold text-slate-500">Weeds:</span> {activeSubTrial?.WeedSpecies || '—'}</p>
+                          <p><span className="font-semibold text-slate-500">Replication:</span> {activeSubTrial?.Replication || '—'}</p>
+                          <p className="mt-2 text-slate-400">Works without internet. Scan with Plot Scanner to open this trial.</p>
+                        </div>
+                      ) : (() => {
+                        const LIVE_FIELDS = [
+                          { key: 'showFormulationName', label: 'Product Name' },
+                          { key: 'showInvestigator', label: 'Investigator' },
+                          { key: 'showDate', label: 'Application Date' },
+                          { key: 'showDosage', label: 'Dosage' },
+                          { key: 'showLocation', label: 'Location' },
+                          { key: 'showWeedSpecies', label: 'Target Weeds' },
+                          { key: 'showResult', label: 'Result' },
+                          { key: 'showWeather', label: 'Weather' },
+                          { key: 'showIngredients', label: 'Ingredients' },
+                          { key: 'showConclusion', label: 'Conclusion & Notes' },
+                          { key: 'showPhotos', label: 'Field Photos' },
+                          { key: 'showObservations', label: 'Observations / Efficacy' },
+                          { key: 'showAISummary', label: 'AI Narrative' },
+                          { key: 'showReplication', label: 'Replication' },
+                        ];
+                        const defaultOn = {
+                          showFormulationName: true,
+                          showInvestigator: true,
+                          showDate: true,
+                          showDosage: true,
+                          showLocation: true,
+                          showWeedSpecies: true,
+                          showResult: true,
+                          showWeather: true,
+                          showIngredients: false,
+                          showConclusion: true,
+                          showPhotos: true,
+                          showObservations: false,
+                          showAISummary: false,
+                          showReplication: false,
+                        };
+                        const globalOnlineRaw = state.settings?.qrOnlineFields;
+                        const globalOnlineDefaults = Array.isArray(globalOnlineRaw)
+                          ? {
+                              ...defaultOn,
+                              showFormulationName: globalOnlineRaw.includes('FormulationName'),
+                              showInvestigator: globalOnlineRaw.includes('InvestigatorName'),
+                              showDate: globalOnlineRaw.includes('Date'),
+                              showDosage: globalOnlineRaw.includes('Dosage'),
+                              showLocation: globalOnlineRaw.includes('Location'),
+                              showWeedSpecies: globalOnlineRaw.includes('WeedSpecies'),
+                              showResult: globalOnlineRaw.includes('Result'),
+                              showWeather: globalOnlineRaw.includes('Weather'),
+                              showConclusion: globalOnlineRaw.includes('Conclusion'),
+                              showPhotos: globalOnlineRaw.includes('Photos'),
+                            }
+                          : (globalOnlineRaw && typeof globalOnlineRaw === 'object'
+                            ? { ...defaultOn, ...globalOnlineRaw }
+                            : defaultOn);
+                        const rawLiveSettings = safeJsonParse(activeSubTrial?.LiveQRSettings, {});
+                        const liveSettings = {
+                          ...globalOnlineDefaults,
+                          ...rawLiveSettings,
+                          ...(Object.prototype.hasOwnProperty.call(rawLiveSettings, 'showInvestigatorName')
+                            ? { showInvestigator: rawLiveSettings.showInvestigatorName }
+                            : {}),
+                        };
+
+                        const handleToggleLiveField = async (fieldKey) => {
+                          const updated = { ...liveSettings, [fieldKey]: !liveSettings[fieldKey] };
+                          const updatedTrial = { ...activeSubTrial, LiveQRSettings: JSON.stringify(updated) };
+                          updateState({ trials: state.trials.map(t => t.ID === updatedTrial.ID ? updatedTrial : t) });
+                          if (selectedSubTrialId === activeSubTrial.ID) setSelectedSubTrialId(updatedTrial.ID);
+                          try {
+                            await updateTrial({ ID: updatedTrial.ID, LiveQRSettings: updatedTrial.LiveQRSettings }, getAppState);
+                          } catch (e) {
+                            window.dispatchEvent(new CustomEvent('app:toast', { detail: { msg: 'Could not save: ' + e.message, type: 'error' } }));
+                          }
+                        };
+
+                        return (
+                          <div className="w-full space-y-3">
+                            <div className="bg-blue-50 rounded-xl p-4 text-xs text-blue-800 border border-blue-200 space-y-2">
+                              <p className="font-bold text-blue-700 mb-1">🌐 Online / Live QR — links to:</p>
+                              <p className="font-mono break-all text-blue-600 bg-blue-100 rounded p-2">{liveUrl}</p>
+                              <p>Anyone with this QR can view live trial data directly from Firebase — no login required.</p>
+                            </div>
+                            <div className="w-full bg-white rounded-xl border border-slate-200 p-4">
+                              <p className="text-xs font-bold text-slate-700 mb-3 flex items-center gap-1.5">
+                                <SlidersHorizontal className="w-3.5 h-3.5 text-slate-500" />
+                                Control what visitors see — changes save instantly to Firebase
+                              </p>
+                              <div className="grid grid-cols-2 gap-2">
+                                {LIVE_FIELDS.map(({ key, label }) => (
+                                  <label key={key} className="flex items-center gap-2 cursor-pointer select-none">
+                                    <div
+                                      onClick={() => handleToggleLiveField(key)}
+                                      className={`relative w-8 h-4 rounded-full transition-colors shrink-0 ${
+                                        liveSettings[key] ? 'bg-emerald-500' : 'bg-slate-300'
+                                      }`}
+                                    >
+                                      <span className={`absolute top-0.5 left-0.5 w-3 h-3 rounded-full bg-white shadow transition-transform ${
+                                        liveSettings[key] ? 'translate-x-4' : 'translate-x-0'
+                                      }`} />
+                                    </div>
+                                    <span className={`text-xs ${liveSettings[key] ? 'text-slate-700 font-semibold' : 'text-slate-400 line-through'}`}>
+                                      {label}
+                                    </span>
+                                  </label>
+                                ))}
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })()}
                     </div>
-                  )}
+                  );
+                })()}
 
                   {/* EXPORT TAB */}
                   {detailTab === 'export' && (
@@ -2296,8 +2598,8 @@ export default function LargeScaleTrials({ onMenuClick }) {
         )}
       </div>
 
-      {/* Modal: Create Project Workspace */}
-      <Modal isOpen={isProjectModalOpen} onClose={() => setIsProjectModalOpen(false)} title="New Master Field Study">
+      {/* Modal: Create/Edit Project Workspace */}
+      <Modal isOpen={isProjectModalOpen} onClose={() => setIsProjectModalOpen(false)} title={projectForm.ID ? "Edit Master Field Study" : "New Master Field Study"}>
         <form onSubmit={handleSaveProject} className="space-y-4 font-sans text-xs">
           <div>
             <label className="block text-slate-600 font-bold mb-1">Study Workspace Name</label>
@@ -2355,7 +2657,7 @@ export default function LargeScaleTrials({ onMenuClick }) {
             type="submit"
             className="w-full py-2 bg-emerald-700 text-white font-bold rounded-lg hover:bg-emerald-800 transition"
           >
-            Create Master Workspace
+            {projectForm.ID ? "Save Workspace Changes" : "Create Master Workspace"}
           </button>
         </form>
       </Modal>
@@ -2387,17 +2689,7 @@ export default function LargeScaleTrials({ onMenuClick }) {
             </div>
           </div>
 
-          <div className="grid grid-cols-3 gap-3">
-            <div>
-              <label className="block text-slate-600 font-bold mb-1">Replication ID</label>
-              <input
-                type="text"
-                placeholder="e.g. R1"
-                value={subTrialForm.Replication}
-                onChange={e => setSubTrialForm(p => ({ ...p, Replication: e.target.value.toUpperCase() }))}
-                className="w-full px-3 py-2 border rounded-lg focus:outline-none"
-              />
-            </div>
+          <div className="grid grid-cols-2 gap-3">
             <div>
               <label className="block text-slate-600 font-bold mb-1">Plot Number</label>
               <input
