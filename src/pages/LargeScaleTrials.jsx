@@ -18,7 +18,7 @@ import {
   Plus, Trash2, MapPin, Calendar, Camera, Info, Sparkles, X,
   Compass, Map as MapIcon, RefreshCw, Layers, Thermometer, Wind, Droplets, CloudRain,
   Eye, CheckCircle, ChevronRight, BarChart2, Edit, ArrowLeft, FileText, Download,
-  TrendingUp, Leaf, SlidersHorizontal, BookOpen, Layers3, Activity, FolderPlus, Hash, Clock, Navigation, Lock, Unlock, Copy, Share2, MoreVertical
+  TrendingUp, Leaf, SlidersHorizontal, BookOpen, Layers3, Activity, FolderPlus, Hash, Clock, Navigation, Lock, Unlock, Copy, Share2, MoreVertical, Image as ImageIcon
 } from 'lucide-react';
 import { getAPIKeys, analyzePhoto } from '../services/multiProviderAI.js';
 import { calculateDAA, toDatetimeLocal, formatDate, formatDateTime, formatPhotoDate } from '../utils/dateUtils.js';
@@ -135,6 +135,12 @@ export default function LargeScaleTrials({ onMenuClick }) {
   const [weedIdLoading, setWeedIdLoading] = useState(false);
   const [weedIdResult, setWeedIdResult] = useState(null);
 
+  const [viewMode, setViewMode] = useState('gis'); // 'gis' | 'spots'
+  const [search, setSearch] = useState('');
+  const [filterResult, setFilterResult] = useState('');
+  const [filterRole, setFilterRole] = useState(''); // 'all' | 'control' | 'standard'
+  const [sortBy, setSortBy] = useState('date-desc');
+
   // Refs
   const quickActionTrialRef = useRef(null);
   const cropCallbackRef = useRef(null);
@@ -157,6 +163,41 @@ export default function LargeScaleTrials({ onMenuClick }) {
     if (!activeProjectId) return [];
     return (state.trials || []).filter(t => t.ProjectID === activeProjectId);
   }, [state.trials, activeProjectId]);
+
+  const filteredSubTrials = useMemo(() => {
+    let result = [...subTrials];
+    if (search.trim()) {
+      const q = search.toLowerCase();
+      result = result.filter(st =>
+        (st.FormulationName || '').toLowerCase().includes(q) ||
+        (st.InvestigatorName || '').toLowerCase().includes(q) ||
+        (st.Location || '').toLowerCase().includes(q) ||
+        (st.Notes || '').toLowerCase().includes(q)
+      );
+    }
+    if (filterResult) {
+      result = result.filter(st => st.Result === filterResult);
+    }
+    if (filterRole === 'control') {
+      result = result.filter(st => st.IsControl === true || st.IsControl === 'true');
+    } else if (filterRole === 'standard') {
+      result = result.filter(st => st.IsStandardCheck === true || st.IsStandardCheck === 'true');
+    }
+
+    result.sort((a, b) => {
+      if (sortBy === 'date-desc') return new Date(b.Date || 0) - new Date(a.Date || 0);
+      if (sortBy === 'date-asc') return new Date(a.Date || 0) - new Date(b.Date || 0);
+      if (sortBy === 'name') return (a.FormulationName || '').localeCompare(b.FormulationName || '');
+      if (sortBy === 'obs') {
+        const lenA = safeJsonParse(a.EfficacyDataJSON, []).length;
+        const lenB = safeJsonParse(b.EfficacyDataJSON, []).length;
+        return lenB - lenA;
+      }
+      return 0;
+    });
+
+    return result;
+  }, [subTrials, search, filterResult, filterRole, sortBy]);
 
   // Active sub-trial details
   const activeSubTrial = useMemo(() => {
@@ -1283,6 +1324,24 @@ export default function LargeScaleTrials({ onMenuClick }) {
     }
   };
 
+  const handleBulkDeleteSubTrials = async () => {
+    if (!selectedForBulk.size) return;
+    if (!window.confirm(`Delete ${selectedForBulk.size} selected sub-trial spot(s) and all their observations?`)) return;
+    try {
+      const ids = Array.from(selectedForBulk);
+      for (const id of ids) {
+        await deleteTrial({ ID: id }, getAppState);
+      }
+      updateState({ trials: state.trials.filter(t => !selectedForBulk.has(t.ID)) });
+      setSelectedForBulk(new Set());
+      setSelectedSubTrialId('');
+      window.dispatchEvent(new CustomEvent('app:toast', { detail: { msg: 'Selected sub-trials deleted.', type: 'success' } }));
+    } catch (err) {
+      console.error(err);
+      window.dispatchEvent(new CustomEvent('app:toast', { detail: { msg: 'Failed to delete some sub-trials.', type: 'error' } }));
+    }
+  };
+
   // Comparative charts calculations
   const chartData = useMemo(() => {
     const daaSet = new Set([0]);
@@ -1355,750 +1414,805 @@ export default function LargeScaleTrials({ onMenuClick }) {
         </div>
 
         {activeProjectId ? (
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            {/* Left side: Master Dashboard (Map, curves, summaries) */}
-            <div className="lg:col-span-2 space-y-6">
-              
-              {/* Dashboard Navigation Tabs */}
-              <div className="flex bg-slate-200/50 p-1 rounded-xl w-fit">
-                <button
-                  onClick={() => setDashboardTab('map')}
-                  className={`px-4 py-1.5 text-xs font-bold rounded-lg transition-all ${dashboardTab === 'map' ? 'bg-white text-emerald-800 shadow-sm' : 'text-slate-500 hover:text-slate-800'}`}
-                >
-                  <MapIcon className="inline-block w-3.5 h-3.5 mr-1" /> GIS Satellite Map
-                </button>
-                <button
-                  onClick={() => setDashboardTab('charts')}
-                  className={`px-4 py-1.5 text-xs font-bold rounded-lg transition-all ${dashboardTab === 'charts' ? 'bg-white text-emerald-800 shadow-sm' : 'text-slate-500 hover:text-slate-800'}`}
-                >
-                  <BarChart2 className="inline-block w-3.5 h-3.5 mr-1" /> Efficacy Curves
-                </button>
-                <button
-                  onClick={() => setDashboardTab('ai')}
-                  className={`px-4 py-1.5 text-xs font-bold rounded-lg transition-all ${dashboardTab === 'ai' ? 'bg-white text-emerald-800 shadow-sm' : 'text-slate-500 hover:text-slate-800'}`}
-                >
-                  <Sparkles className="inline-block w-3.5 h-3.5 mr-1" /> Master Report
-                </button>
+          selectedSubTrialId && activeSubTrial ? (
+            // Full Width Inspector Panel
+            <div className="space-y-6">
+              {/* Top back banner */}
+              <div className="flex items-center justify-between bg-white p-4 rounded-2xl border border-slate-100 shadow-sm">
+                <div className="flex items-center gap-3">
+                  <button
+                    onClick={() => setSelectedSubTrialId('')}
+                    className="px-3.5 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition flex items-center gap-1.5"
+                  >
+                    <ArrowLeft className="w-4 h-4 text-emerald-700" /> Back to Spots Directory
+                  </button>
+                  <div className="h-4 w-px bg-slate-200" />
+                  <div>
+                    <h3 className="font-bold text-slate-800 text-sm">
+                      {activeSubTrial.FormulationName || 'Untitled Spot'}
+                    </h3>
+                    <p className="text-[10px] text-slate-400">
+                      Rep: {activeSubTrial.Replication} | Plot: {activeSubTrial.PlotNumber || 'N/A'}
+                    </p>
+                  </div>
+                </div>
+                
+                <div className="flex gap-2">
+                  <span className={`text-[10px] font-bold px-2 py-1 rounded-full ${activeSubTrial.IsCompleted ? 'bg-emerald-100 text-emerald-800' : 'bg-blue-100 text-blue-800'}`}>
+                    {activeSubTrial.IsCompleted ? 'Finalized' : 'Active'}
+                  </span>
+                  {activeSubTrial.IsControl === true || activeSubTrial.IsControl === 'true' ?
+                    <span className="text-[10px] font-bold px-2 py-1 rounded-full bg-purple-100 text-purple-800">Control</span> : null}
+                  <span className="text-[10px] font-bold px-2 py-1 rounded-full bg-emerald-50 text-emerald-800 border">
+                    {activeSubTrial.Result || 'Unrated'}
+                  </span>
+                </div>
               </div>
 
-              {/* Tab: Map */}
-              {dashboardTab === 'map' && (
-                <div className="bg-white rounded-3xl overflow-hidden shadow-sm border border-slate-100 flex flex-col h-[480px] relative">
-                  <div className="p-4 border-b border-slate-100 flex justify-between items-center bg-slate-50/50">
-                    <span className="font-bold text-slate-700 text-sm flex items-center gap-2">
-                      <MapIcon className="w-4 h-4 text-emerald-600" /> Esri Satellite Spatial Coordinates
-                    </span>
-                    <div className="text-[10px] font-bold text-slate-400 bg-slate-100 px-2 py-0.5 rounded-full">
-                      {subTrials.length} Monitoring Spots
-                    </div>
-                  </div>
-                  <div ref={mapContainerRef} className="flex-1 w-full h-full bg-slate-50" />
+              {/* Inspector Body (spacious content tabs) */}
+              <div className="bg-white rounded-3xl p-6 shadow-sm border border-slate-100 min-h-[500px]">
+                {/* Tabs Nav */}
+                <div className="flex border-b bg-white overflow-x-auto whitespace-nowrap scrollbar-none mb-6">
+                  {[['info','Info'],['observations','Obs'],['photos','Photos'],['weather','Weather'],['chart','Chart'],['statistics','Stats'],['qr','QR'],['export','Export']].map(([k, label]) => {
+                    const obsCount = obsData.sorted.length;
+                    const photosCount = safeJsonParse(activeSubTrial.PhotoURLs, []).length;
+                    return (
+                      <button
+                        key={k}
+                        onClick={() => setDetailTab(k)}
+                        className={`px-3 py-2.5 text-xs font-bold border-b-2 transition
+                          ${detailTab === k ? 'border-emerald-600 text-emerald-700' : 'border-transparent text-slate-500 hover:text-slate-700'}`}
+                      >
+                        {label}
+                        {k === 'observations' && obsCount > 0 && <span className="ml-1 text-[9px] bg-emerald-100 text-emerald-700 px-1 rounded-full">{obsCount}</span>}
+                        {k === 'photos' && photosCount > 0 && <span className="ml-1 text-[9px] bg-blue-100 text-blue-700 px-1 rounded-full">{photosCount}</span>}
+                      </button>
+                    );
+                  })}
                 </div>
-              )}
 
-              {/* Tab: Curves */}
-              {dashboardTab === 'charts' && (
-                <div className="bg-white rounded-3xl p-6 shadow-sm border border-slate-100">
-                  <h3 className="font-bold text-slate-800 text-base mb-2">Weed Cover Trajectories</h3>
-                  <p className="text-xs text-slate-400 mb-6">Compare weed cover reduction rates (%) across different sub-trial zones side-by-side.</p>
-
-                  {chartData.daas.length > 0 && chartData.datasets.length > 0 ? (
-                    <div className="h-72 flex flex-col justify-between">
-                      <div className="flex-1 relative">
-                        <svg className="w-full h-full" viewBox="0 0 500 200" preserveAspectRatio="none">
-                          {/* Y-axis lines */}
-                          {[0, 20, 40, 60, 80, 100].map(yVal => {
-                            const y = 200 - (yVal * 200 / 100);
-                            return (
-                              <line key={yVal} x1="0" y1={y} x2="500" y2={y} stroke="#f1f5f9" strokeWidth="1" />
-                            );
-                          })}
-
-                          {/* Data Timelines */}
-                          {chartData.datasets.map((ds, dsIdx) => {
-                            const colors = ['#10b981', '#3b82f6', '#f59e0b', '#8b5cf6', '#ec4899', '#06b6d4'];
-                            const points = ds.data.map((val, idx) => {
-                              if (val === null) return null;
-                              const x = (idx / (chartData.daas.length - 1 || 1)) * 500;
-                              const y = 200 - (val * 200 / 100);
-                              return `${x},${y}`;
-                            }).filter(Boolean).join(' ');
-
-                            return (
-                              <polyline
-                                key={ds.label}
-                                fill="none"
-                                stroke={colors[dsIdx % colors.length]}
-                                strokeWidth="3"
-                                points={points}
-                              />
-                            );
-                          })}
-                        </svg>
-                      </div>
-
-                      {/* X-Axis */}
-                      <div className="flex justify-between border-t border-slate-100 pt-2 text-[10px] text-slate-400 font-bold uppercase tracking-wider">
-                        {chartData.daas.map(daa => (
-                          <span key={daa}>DAA {daa}</span>
+                {/* Tab Content Panel */}
+                <div className="space-y-4">
+                  {/* INFO TAB */}
+                  {detailTab === 'info' && (
+                    <div className="space-y-4">
+                      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                        {[
+                          ['Investigator', activeSubTrial.InvestigatorName, Info],
+                          ['Dosage', activeSubTrial.Dosage, SlidersHorizontal],
+                          ['Weeds targeted', activeSubTrial.WeedSpecies, Leaf],
+                          ['Replication', activeSubTrial.Replication, Hash],
+                          ['Plot #', activeSubTrial.PlotNumber, Hash],
+                          ['App Timing', activeSubTrial.ApplicationTiming, Clock],
+                          ['Growth Stage', activeSubTrial.WeedGrowthStage, Leaf],
+                          ['Soil Texture', activeSubTrial.SoilTexture, Compass]
+                        ].map(([label, val, Icon]) => (
+                          <div key={label} className="bg-slate-50 rounded-xl p-3 border border-slate-100 text-xs">
+                            <div className="flex items-center gap-1.5 mb-1">
+                              <Icon className="w-3.5 h-3.5 text-slate-400" />
+                              <span className="text-[9px] font-bold text-slate-400 uppercase">{label}</span>
+                            </div>
+                            <p className="font-bold text-slate-800">{val || '—'}</p>
+                          </div>
                         ))}
                       </div>
 
-                      {/* Legend */}
-                      <div className="flex flex-wrap gap-4 mt-4 pt-3 border-t border-slate-100">
-                        {chartData.datasets.map((ds, dsIdx) => {
-                          const colors = ['#10b981', '#3b82f6', '#f59e0b', '#8b5cf6', '#ec4899', '#06b6d4'];
-                          return (
-                            <div key={ds.label} className="flex items-center gap-1.5 text-xs text-slate-600 font-semibold">
-                              <span className="w-3 h-3 rounded-full" style={{ backgroundColor: colors[dsIdx % colors.length] }} />
-                              <span>{ds.label}</span>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="py-16 text-center text-slate-400 italic">No historical visits logged yet.</div>
-                  )}
-                </div>
-              )}
-
-              {/* Tab: Master Report & AI Narrative */}
-              {dashboardTab === 'ai' && (
-                <div className="bg-white rounded-3xl p-6 shadow-sm border border-slate-100 space-y-6">
-                  <div className="flex justify-between items-center pb-4 border-b">
-                    <div>
-                      <h3 className="font-bold text-slate-800 text-base flex items-center gap-2">
-                        <Sparkles className="w-5 h-5 text-violet-600 animate-pulse" /> Master Efficacy Report
-                      </h3>
-                      <p className="text-xs text-slate-400 mt-0.5">Unified report synthesizing all Sub-Trial outcomes in the workspace.</p>
-                    </div>
-
-                    <div className="flex gap-2">
-                      <button
-                        onClick={handleGenerateMasterReport}
-                        disabled={aiReportRunning}
-                        className="px-3.5 py-2 bg-violet-600 hover:bg-violet-700 text-white font-bold rounded-xl text-xs flex items-center gap-1.5 transition disabled:opacity-50"
-                      >
-                        <RefreshCw className={`w-3.5 h-3.5 ${aiReportRunning ? 'animate-spin' : ''}`} />
-                        {aiReportRunning ? 'Generating...' : 'Synthesize AI Summary'}
-                      </button>
-                    </div>
-                  </div>
-
-                  {/* AI Output */}
-                  <div className="bg-slate-50/50 rounded-2xl p-4 border border-slate-100">
-                    <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">Executive Study Narrative</h4>
-                    {activeProject?._aiMasterSummary ? (
-                      <div className="text-sm text-slate-700 leading-relaxed whitespace-pre-wrap font-sans">
-                        {activeProject._aiMasterSummary}
-                      </div>
-                    ) : (
-                      <div className="text-slate-400 italic text-sm py-8 text-center">
-                        No narrative summary generated. Click "Synthesize AI Summary" to compile sub-trial findings.
-                      </div>
-                    )}
-                  </div>
-
-                  {/* Export Options */}
-                  <div className="pt-4 border-t space-y-3">
-                    <span className="text-xs font-bold text-slate-500 uppercase tracking-wider block">Export Unified Master Study Report</span>
-                    <div className="grid grid-cols-2 md:grid-cols-3 gap-2.5">
-                      <button
-                        onClick={() => generateMasterComprehensivePdf(activeProject, subTrials, { formulations: state.formulations, aiSummary: activeProject?._aiMasterSummary })}
-                        className="px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition flex items-center gap-1.5"
-                      >
-                        <FileText className="w-4 h-4 text-emerald-600" /> Comprehensive PDF
-                      </button>
-                      <button
-                        onClick={() => generateMasterScientificReport(activeProject, subTrials, { aiSummary: activeProject?._aiMasterSummary })}
-                        className="px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition flex items-center gap-1.5"
-                      >
-                        <FileText className="w-4 h-4 text-sky-600" /> Scientific PDF
-                      </button>
-                      <button
-                        onClick={() => generateMasterPpt(activeProject, subTrials)}
-                        className="px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition flex items-center gap-1.5"
-                      >
-                        <BarChart2 className="w-4 h-4 text-amber-600" /> PowerPoint Deck
-                      </button>
-                      <button
-                        onClick={() => exportMasterCSV(activeProject, subTrials)}
-                        className="px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition flex items-center gap-1.5"
-                      >
-                        <TrendingUp className="w-4 h-4 text-purple-600" /> CSV Dataset
-                      </button>
-                      <button
-                        onClick={() => exportMasterHtml(activeProject, subTrials)}
-                        className="px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition flex items-center gap-1.5"
-                      >
-                        <Leaf className="w-4 h-4 text-teal-600" /> Standalone HTML
-                      </button>
-                      <button
-                        onClick={() => exportMasterDocx(activeProject, subTrials)}
-                        className="px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition flex items-center gap-1.5"
-                      >
-                        <BookOpen className="w-4 h-4 text-indigo-600" /> Word Document
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              )}
-            </div>
-
-            {/* Right side: Sub-Trials Folder / Directory & Inspector */}
-            <div className="space-y-6">
-              {activeSubTrial ? (
-                // Tabbed Inspector View (matching standard Trials detail panel)
-                <div className="bg-white rounded-3xl shadow-sm border border-slate-100 flex flex-col h-[760px] overflow-hidden">
-                  {/* Header */}
-                  <div className={`p-4 flex items-start justify-between gap-3 ${activeSubTrial.IsCompleted ? 'bg-emerald-50' : 'bg-blue-50'}`}>
-                    <div className="min-w-0">
-                      <div className="flex items-center gap-1.5 mb-1 flex-wrap">
-                        <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${activeSubTrial.IsCompleted ? 'bg-emerald-200 text-emerald-800' : 'bg-blue-200 text-blue-800'}`}>
-                          {activeSubTrial.IsCompleted ? 'Finalized' : 'Active'}
-                        </span>
-                        {activeSubTrial.IsControl === true || activeSubTrial.IsControl === 'true' ?
-                          <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-purple-200 text-purple-800">Control</span> : null}
-                        <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 border">
-                          {activeSubTrial.Result || 'Unrated'}
-                        </span>
-                      </div>
-                      <h3 className="text-sm font-bold text-slate-800 truncate">{activeSubTrial.FormulationName || 'Untreated Check'}</h3>
-                      <p className="text-[10px] text-slate-500 mt-0.5">
-                        Rep: {activeSubTrial.Replication || 'N/A'} · Plot: {activeSubTrial.PlotNumber || 'N/A'}
-                      </p>
-                    </div>
-
-                    <div className="flex gap-1 shrink-0">
-                      <button
-                        onClick={() => setSelectedSubTrialId('')}
-                        className="p-1 text-slate-400 hover:text-slate-600 rounded bg-white/60 border border-slate-200 shadow-sm text-xs font-bold px-2"
-                      >
-                        Back
-                      </button>
-                    </div>
-                  </div>
-
-                  {/* Tabs Nav */}
-                  <div className="flex border-b bg-white overflow-x-auto whitespace-nowrap scrollbar-none">
-                    {[['info','Info'],['observations','Obs'],['photos','Photos'],['weather','Weather'],['chart','Chart'],['statistics','Stats'],['qr','QR'],['export','Export']].map(([k, label]) => {
-                      const obsCount = obsData.sorted.length;
-                      const photosCount = safeJsonParse(activeSubTrial.PhotoURLs, []).length;
-                      return (
-                        <button
-                          key={k}
-                          onClick={() => setDetailTab(k)}
-                          className={`px-3 py-2.5 text-xs font-bold border-b-2 transition
-                            ${detailTab === k ? 'border-emerald-600 text-emerald-700' : 'border-transparent text-slate-500 hover:text-slate-700'}`}
-                        >
-                          {label}
-                          {k === 'observations' && obsCount > 0 && <span className="ml-1 text-[9px] bg-emerald-100 text-emerald-700 px-1 rounded-full">{obsCount}</span>}
-                          {k === 'photos' && photosCount > 0 && <span className="ml-1 text-[9px] bg-blue-100 text-blue-700 px-1 rounded-full">{photosCount}</span>}
-                        </button>
-                      );
-                    })}
-                  </div>
-
-                  {/* Tab Content Panel */}
-                  <div className="flex-1 overflow-y-auto p-4 space-y-4">
-                    
-                    {/* INFO TAB */}
-                    {detailTab === 'info' && (
-                      <div className="space-y-4">
-                        <div className="grid grid-cols-2 gap-2.5">
-                          {[
-                            ['Investigator', activeSubTrial.InvestigatorName, Info],
-                            ['Dosage', activeSubTrial.Dosage, SlidersHorizontal],
-                            ['Weeds targeted', activeSubTrial.WeedSpecies, Leaf],
-                            ['Replication', activeSubTrial.Replication, Hash],
-                            ['Plot #', activeSubTrial.PlotNumber, Hash],
-                            ['App Timing', activeSubTrial.ApplicationTiming, Clock],
-                            ['Growth Stage', activeSubTrial.WeedGrowthStage, Leaf],
-                            ['Soil Texture', activeSubTrial.SoilTexture, Compass]
-                          ].map(([label, val, Icon]) => (
-                            <div key={label} className="bg-slate-50 rounded-xl p-2.5 border border-slate-100 text-xs">
-                              <div className="flex items-center gap-1.5 mb-1">
-                                <Icon className="w-3.5 h-3.5 text-slate-400" />
-                                <span className="text-[9px] font-bold text-slate-400 uppercase">{label}</span>
-                              </div>
-                              <p className="font-bold text-slate-800">{val || '—'}</p>
-                            </div>
-                          ))}
+                      {activeSubTrial.Notes && (
+                        <div className="bg-slate-50 rounded-xl p-4 border text-xs">
+                          <span className="text-[9px] font-bold text-slate-400 uppercase block mb-1">Notes</span>
+                          <p className="text-slate-600 whitespace-pre-wrap">{activeSubTrial.Notes}</p>
                         </div>
+                      )}
 
-                        {activeSubTrial.Notes && (
-                          <div className="bg-slate-50 rounded-xl p-3 border text-xs">
-                            <span className="text-[9px] font-bold text-slate-400 uppercase block mb-1">Notes</span>
-                            <p className="text-slate-600 whitespace-pre-wrap">{activeSubTrial.Notes}</p>
+                      {activeSubTrial.Conclusion && (
+                        <div className="bg-emerald-50/50 rounded-xl p-4 border border-emerald-100 text-xs">
+                          <span className="text-[9px] font-bold text-emerald-600 uppercase block mb-1">Conclusion</span>
+                          <p className="text-slate-700 whitespace-pre-wrap">{activeSubTrial.Conclusion}</p>
+                        </div>
+                      )}
+
+                      {/* Soil Data */}
+                      {(activeSubTrial.SoilPH || activeSubTrial.SoilClay || activeSubTrial.SoilSand) && (
+                        <div className="bg-amber-50/30 rounded-xl p-4 border border-amber-100/50 text-xs">
+                          <span className="text-[9px] font-bold text-amber-700 uppercase block mb-2">Soil Characteristics</span>
+                          <div className="grid grid-cols-3 gap-4">
+                            {activeSubTrial.SoilPH && <div><span className="text-amber-800 font-medium">pH:</span> {activeSubTrial.SoilPH}</div>}
+                            {activeSubTrial.SoilClay && <div><span className="text-amber-800 font-medium">Clay:</span> {activeSubTrial.SoilClay}%</div>}
+                            {activeSubTrial.SoilSand && <div><span className="text-amber-800 font-medium">Sand:</span> {activeSubTrial.SoilSand}%</div>}
+                            {activeSubTrial.SoilOC && <div><span className="text-amber-800 font-medium">OC:</span> {activeSubTrial.SoilOC}%</div>}
                           </div>
-                        )}
+                        </div>
+                      )}
 
-                        {activeSubTrial.Conclusion && (
-                          <div className="bg-emerald-50/50 rounded-xl p-3 border border-emerald-100 text-xs">
-                            <span className="text-[9px] font-bold text-emerald-600 uppercase block mb-1">Conclusion</span>
-                            <p className="text-slate-700 whitespace-pre-wrap">{activeSubTrial.Conclusion}</p>
-                          </div>
+                      <div className="flex gap-2 flex-wrap pt-4 border-t">
+                        {!activeSubTrial.IsCompleted ? (
+                          <button
+                            onClick={() => onMarkComplete(activeSubTrial)}
+                            className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold transition flex items-center gap-1.5 shadow-sm"
+                          >
+                            <CheckCircle className="w-4 h-4" /> Finalize Spot
+                          </button>
+                        ) : (
+                          <button
+                            onClick={async () => {
+                              const updated = { ...activeSubTrial, IsCompleted: false };
+                              try {
+                                await updateTrial(updated, getAppState);
+                                updateState({ trials: state.trials.map(t => t.ID === activeSubTrial.ID ? updated : t) });
+                              } catch {}
+                            }}
+                            className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold transition flex items-center gap-1.5 shadow-sm"
+                          >
+                            <RefreshCw className="w-4 h-4" /> Reactivate Spot
+                          </button>
                         )}
+                        <button
+                          onClick={() => onDuplicate(activeSubTrial)}
+                          className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition"
+                        >
+                          Duplicate
+                        </button>
+                        <button
+                          onClick={() => {
+                            setEditingSubTrial(activeSubTrial);
+                            setSubTrialForm({ ...activeSubTrial });
+                            setIsSubTrialModalOpen(true);
+                          }}
+                          className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition flex items-center gap-1.5"
+                        >
+                          <Edit className="w-4 h-4" /> Edit Info
+                        </button>
+                      </div>
+                    </div>
+                  )}
 
-                        {/* Soil Data */}
-                        {(activeSubTrial.SoilPH || activeSubTrial.SoilClay || activeSubTrial.SoilSand) && (
-                          <div className="bg-amber-50/30 rounded-xl p-3 border border-amber-100/50 text-xs">
-                            <span className="text-[9px] font-bold text-amber-700 uppercase block mb-2">Soil Characteristics</span>
-                            <div className="grid grid-cols-3 gap-2">
-                              {activeSubTrial.SoilPH && <div><span className="text-amber-800 font-medium">pH:</span> {activeSubTrial.SoilPH}</div>}
-                              {activeSubTrial.SoilClay && <div><span className="text-amber-800 font-medium">Clay:</span> {activeSubTrial.SoilClay}%</div>}
-                              {activeSubTrial.SoilSand && <div><span className="text-amber-800 font-medium">Sand:</span> {activeSubTrial.SoilSand}%</div>}
-                              {activeSubTrial.SoilOC && <div><span className="text-amber-800 font-medium">OC:</span> {activeSubTrial.SoilOC}%</div>}
-                            </div>
-                          </div>
-                        )}
-
-                        <div className="flex gap-2 flex-wrap pt-2 border-t">
-                          {!activeSubTrial.IsCompleted ? (
+                  {/* OBSERVATIONS TAB */}
+                  {detailTab === 'observations' && (
+                    <div className="space-y-4">
+                      <div className="flex justify-between items-center">
+                        <span className="text-[10px] font-bold text-slate-400 uppercase">DAA Observations Log</span>
+                        <div className="flex gap-1.5">
+                          {obsData.sorted.length >= 2 && (
                             <button
-                              onClick={() => onMarkComplete(activeSubTrial)}
-                              className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold transition flex items-center gap-1 shadow-sm"
+                              onClick={generateAISummary}
+                              className="px-3 py-1.5 bg-violet-600 hover:bg-violet-700 text-white font-bold rounded-lg text-[10px] flex items-center gap-1.5 shadow-sm"
                             >
-                              <CheckCircle className="w-3.5 h-3.5" /> Finalize Spot
-                            </button>
-                          ) : (
-                            <button
-                              onClick={async () => {
-                                const updated = { ...activeSubTrial, IsCompleted: false };
-                                try {
-                                  await updateTrial(updated, getAppState);
-                                  updateState({ trials: state.trials.map(t => t.ID === activeSubTrial.ID ? updated : t) });
-                                } catch {}
-                              }}
-                              className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold transition flex items-center gap-1 shadow-sm"
-                            >
-                              <RefreshCw className="w-3.5 h-3.5" /> Reactivate Spot
+                              <Sparkles className="w-3.5 h-3.5" /> AI Summary
                             </button>
                           )}
                           <button
-                            onClick={() => onDuplicate(activeSubTrial)}
-                            className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition"
-                          >
-                            Duplicate
-                          </button>
-                          <button
                             onClick={() => {
-                              setEditingSubTrial(activeSubTrial);
-                              setSubTrialForm({ ...activeSubTrial });
-                              setIsSubTrialModalOpen(true);
+                              setEditingVisitIdx(null);
+                              setVisitForm({ ...emptyVisitForm(), date: new Date().toISOString().split('T')[0] });
+                              setIsVisitModalOpen(true);
                             }}
-                            className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition flex items-center gap-1"
+                            className="px-3 py-1.5 bg-emerald-700 hover:bg-emerald-800 text-white font-bold rounded-lg text-[10px] flex items-center gap-1"
                           >
-                            <Edit className="w-3.5 h-3.5" /> Edit Info
+                            <Plus className="w-3.5 h-3.5" /> Log Visit
                           </button>
                         </div>
                       </div>
-                    )}
 
-                    {/* OBSERVATIONS TAB */}
-                    {detailTab === 'observations' && (
-                      <div className="space-y-4">
-                        <div className="flex justify-between items-center">
-                          <span className="text-[10px] font-bold text-slate-400 uppercase">DAA Observations Log</span>
-                          <div className="flex gap-1.5">
-                            {obsData.sorted.length >= 2 && (
-                              <button
-                                onClick={generateAISummary}
-                                className="px-2.5 py-1 bg-violet-600 hover:bg-violet-700 text-white font-bold rounded-lg text-[10px] flex items-center gap-1 shadow-sm"
-                              >
-                                <Sparkles className="w-3 h-3" /> AI Summary
-                              </button>
-                            )}
-                            <button
-                              onClick={() => {
-                                setEditingVisitIdx(null);
-                                setVisitForm({ ...emptyVisitForm(), date: new Date().toISOString().split('T')[0] });
-                                setIsVisitModalOpen(true);
-                              }}
-                              className="px-2.5 py-1 bg-emerald-700 hover:bg-emerald-800 text-white font-bold rounded-lg text-[10px] flex items-center gap-0.5"
-                            >
-                              <Plus className="w-3 h-3" /> Log Visit
-                            </button>
-                          </div>
-                        </div>
+                      {obsData.sorted.length > 0 ? (
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                          {obsData.sorted.map((visit, idx) => {
+                            const isBaseline = visit.daa === obsData.sorted[0]?.daa;
+                            const wce = obsData.baseCover > 0 && !isBaseline ? Math.max(0, Math.min(100, (1 - visit.weedCover / obsData.baseCover) * 100)) : null;
+                            const wceRating = wce === null ? null : wce >= 85 ? 'Excellent' : wce >= 70 ? 'Good' : wce >= 50 ? 'Fair' : 'Poor';
+                            const wceCls = wce === null ? '' : wce >= 85 ? 'text-emerald-700 bg-emerald-50' : wce >= 70 ? 'text-blue-700 bg-blue-50' : wce >= 50 ? 'text-amber-700 bg-amber-50' : 'text-red-700 bg-red-50';
+                            const risks = getClimateRisks(visit.weatherTemp, visit.weatherWind, visit.weatherRain);
 
-                        {obsData.sorted.length > 0 ? (
-                          <div className="space-y-3">
-                            {obsData.sorted.map((visit, idx) => {
-                              const isBaseline = visit.daa === obsData.sorted[0]?.daa;
-                              const wce = obsData.baseCover > 0 && !isBaseline ? Math.max(0, Math.min(100, (1 - visit.weedCover / obsData.baseCover) * 100)) : null;
-                              const wceRating = wce === null ? null : wce >= 85 ? 'Excellent' : wce >= 70 ? 'Good' : wce >= 50 ? 'Fair' : 'Poor';
-                              const wceCls = wce === null ? '' : wce >= 85 ? 'text-emerald-700 bg-emerald-50' : wce >= 70 ? 'text-blue-700 bg-blue-50' : wce >= 50 ? 'text-amber-700 bg-amber-50' : 'text-red-700 bg-red-50';
-                              const risks = getClimateRisks(visit.weatherTemp, visit.weatherWind, visit.weatherRain);
-
-                              return (
-                                <div key={idx} className="bg-white border rounded-2xl p-3 shadow-sm space-y-2 text-xs">
-                                  <div className="flex justify-between items-start">
-                                    <div className="flex items-center gap-1.5 flex-wrap">
-                                      <span className="bg-slate-700 text-white font-bold px-1.5 py-0.5 rounded text-[9px]">DAA {visit.daa}</span>
-                                      <span className="text-[10px] text-slate-400">{visit.date}</span>
-                                      {wceRating && <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded-full ${wceCls}`}>{wceRating}</span>}
-                                    </div>
-                                    <div className="flex gap-1">
-                                      <button
-                                        onClick={() => {
-                                          setEditingVisitIdx(idx);
-                                          setVisitForm({
-                                            daa: visit.daa || '',
-                                            date: visit.date || '',
-                                            weedCover: visit.weedCover || '',
-                                            notes: visit.notes || '',
-                                            weatherTemp: visit.weatherTemp || '',
-                                            weatherHumidity: visit.weatherHumidity || '',
-                                            weatherWind: visit.weatherWind || '',
-                                            weatherRain: visit.weatherRain || '',
-                                            photoUrl: visit.photoUrl || '',
-                                            weedDetails: visit.weedDetails || []
-                                          });
-                                          setIsVisitModalOpen(true);
-                                        }}
-                                        className="text-[10px] text-slate-500 hover:text-emerald-700 font-bold"
-                                      >
-                                        Edit
-                                      </button>
-                                      <button
-                                        onClick={() => handleDeleteVisit(idx)}
-                                        className="text-[10px] text-red-500 hover:text-red-700 font-bold"
-                                      >
-                                        Delete
-                                      </button>
-                                    </div>
+                            return (
+                              <div key={idx} className="bg-white border rounded-2xl p-4 shadow-sm space-y-3 text-xs">
+                                <div className="flex justify-between items-start">
+                                  <div className="flex items-center gap-1.5 flex-wrap">
+                                    <span className="bg-slate-700 text-white font-bold px-1.5 py-0.5 rounded text-[9px]">DAA {visit.daa}</span>
+                                    <span className="text-[10px] text-slate-400">{visit.date}</span>
+                                    {wceRating && <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded-full ${wceCls}`}>{wceRating}</span>}
                                   </div>
-
-                                  <div className="grid grid-cols-2 gap-2 bg-slate-50 p-2 rounded-xl border border-slate-100">
-                                    <div>
-                                      <span className="text-[9px] text-slate-400 block font-semibold">Weed Cover</span>
-                                      <span className="font-bold text-slate-700">{visit.weedCover}%</span>
-                                    </div>
-                                    <div>
-                                      <span className="text-[9px] text-slate-400 block font-semibold">WCE %</span>
-                                      <span className="font-bold text-slate-700">{wce !== null ? `${wce.toFixed(1)}%` : isBaseline ? 'Baseline' : '—'}</span>
-                                    </div>
-                                  </div>
-
-                                  {visit.photoUrl && (
-                                    <div className="relative rounded-lg overflow-hidden border bg-black h-24">
-                                      <img src={visit.photoUrl} alt="" className="w-full h-full object-cover" />
-                                    </div>
-                                  )}
-
-                                  {visit.weedDetails && visit.weedDetails.length > 0 && (
-                                    <div className="text-[10px] text-slate-500 bg-slate-50 p-2 rounded-lg space-y-0.5 border">
-                                      {visit.weedDetails.map((w, wIdx) => (
-                                        <div key={wIdx} className="flex justify-between">
-                                          <span className="font-medium">{w.species}</span>
-                                          <span>{w.cover}% ({w.status || 'Active'})</span>
-                                        </div>
-                                      ))}
-                                    </div>
-                                  )}
-
-                                  {risks.length > 0 && (
-                                    <div className="space-y-1">
-                                      {risks.map((risk, ri) => (
-                                        <div key={ri} className="text-[9px] px-1.5 py-0.5 rounded font-semibold bg-red-50 text-red-700">
-                                          ⚠️ {risk.msg}
-                                        </div>
-                                      ))}
-                                    </div>
-                                  )}
-                                </div>
-                              );
-                            })}
-                          </div>
-                        ) : (
-                          <div className="text-center py-8 text-slate-400 italic">No observation visits logged yet.</div>
-                        )}
-                      </div>
-                    )}
-
-                    {/* PHOTOS TAB */}
-                    {detailTab === 'photos' && (
-                      <div className="space-y-4">
-                        <div className="flex justify-between items-center">
-                          <span className="text-[10px] font-bold text-slate-400 uppercase">Field Spot Photos</span>
-                          <div className="flex gap-2">
-                            <button
-                              type="button"
-                              onClick={() => {
-                                quickActionTrialRef.current = activeSubTrial;
-                                setCameraMode('general');
-                                setIsCameraOpen(true);
-                              }}
-                              className="px-2 py-1 border rounded-lg text-[10px] font-bold text-slate-700 hover:bg-slate-50 flex items-center gap-1"
-                            >
-                              <Camera className="w-3.5 h-3.5 text-emerald-600" /> Camera
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => {
-                                quickActionTrialRef.current = activeSubTrial;
-                                fileInputRef.current?.click();
-                              }}
-                              className="px-2 py-1 border rounded-lg text-[10px] font-bold text-slate-700 hover:bg-slate-50 flex items-center gap-1"
-                            >
-                              <Image className="w-3.5 h-3.5 text-emerald-600" /> Choose File
-                            </button>
-                          </div>
-                        </div>
-
-                        {safeJsonParse(activeSubTrial.PhotoURLs, []).length > 0 ? (
-                          <div className="grid grid-cols-2 gap-3">
-                            {safeJsonParse(activeSubTrial.PhotoURLs, []).map((photo, pIdx) => {
-                              const photoSrc = photo.url || photo.fileData || photo;
-                              return (
-                                <div key={pIdx} className="border rounded-2xl overflow-hidden shadow-sm bg-white flex flex-col">
-                                  <div className="relative h-28 bg-black">
-                                    <img src={photoSrc} alt="" className="w-full h-full object-cover" />
+                                  <div className="flex gap-2">
                                     <button
-                                      onClick={() => handleDeletePhoto(pIdx)}
-                                      className="absolute top-1.5 right-1.5 bg-black/60 text-white rounded-full p-1 hover:bg-red-600 transition"
+                                      onClick={() => {
+                                        setEditingVisitIdx(idx);
+                                        setVisitForm({
+                                          daa: visit.daa || '',
+                                          date: visit.date || '',
+                                          weedCover: visit.weedCover || '',
+                                          notes: visit.notes || '',
+                                          weatherTemp: visit.weatherTemp || '',
+                                          weatherHumidity: visit.weatherHumidity || '',
+                                          weatherWind: visit.weatherWind || '',
+                                          weatherRain: visit.weatherRain || '',
+                                          photoUrl: visit.photoUrl || '',
+                                          weedDetails: visit.weedDetails || []
+                                        });
+                                        setIsVisitModalOpen(true);
+                                      }}
+                                      className="text-xs text-slate-500 hover:text-emerald-700 font-bold"
                                     >
-                                      <X className="w-3 h-3" />
+                                      Edit
+                                    </button>
+                                    <button
+                                      onClick={() => handleDeleteVisit(idx)}
+                                      className="text-xs text-red-500 hover:text-red-700 font-bold"
+                                    >
+                                      Delete
                                     </button>
                                   </div>
-                                  <div className="p-2 space-y-1.5 text-[10px]">
-                                    <p className="font-semibold text-slate-700">{photo.label || `Photo ${pIdx + 1}`}</p>
-                                    <p className="text-slate-400">{photo.date}</p>
-                                    <div className="flex gap-1 pt-1.5 border-t">
-                                      <button
-                                        onClick={() => handleCropExistingPhoto(pIdx, photoSrc)}
-                                        className="flex-1 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded font-bold text-center"
-                                      >
-                                        Crop
-                                      </button>
-                                      <button
-                                        onClick={() => handleAnalyzeSinglePhoto(photoSrc, photo.date)}
-                                        disabled={aiGenRunning}
-                                        className="flex-1 py-1 bg-violet-600 hover:bg-violet-700 text-white rounded font-bold text-center"
-                                      >
-                                        AI Scan
-                                      </button>
-                                    </div>
+                                </div>
+
+                                <div className="grid grid-cols-2 gap-3 bg-slate-50 p-3 rounded-xl border border-slate-100">
+                                  <div>
+                                    <span className="text-[9px] text-slate-400 block font-semibold">Weed Cover</span>
+                                    <span className="font-bold text-slate-700">{visit.weedCover}%</span>
                                   </div>
+                                  <div>
+                                    <span className="text-[9px] text-slate-400 block font-semibold">WCE %</span>
+                                    <span className="font-bold text-slate-700">{wce !== null ? `${wce.toFixed(1)}%` : isBaseline ? 'Baseline' : '—'}</span>
+                                  </div>
+                                </div>
+
+                                {visit.photoUrl && (
+                                  <div className="relative rounded-lg overflow-hidden border bg-black h-36">
+                                    <img src={visit.photoUrl} alt="" className="w-full h-full object-cover" />
+                                  </div>
+                                )}
+
+                                {visit.weedDetails && visit.weedDetails.length > 0 && (
+                                  <div className="text-[10px] text-slate-500 bg-slate-50 p-2 rounded-lg space-y-1 border">
+                                    {visit.weedDetails.map((w, wIdx) => (
+                                      <div key={wIdx} className="flex justify-between">
+                                        <span className="font-semibold">{w.species}</span>
+                                        <span className="text-slate-600 font-bold">{w.cover}% ({w.status || 'Active'})</span>
+                                      </div>
+                                    ))}
+                                  </div>
+                                )}
+
+                                {risks.length > 0 && (
+                                  <div className="space-y-1">
+                                    {risks.map((risk, ri) => (
+                                      <div key={ri} className="text-[9px] px-1.5 py-0.5 rounded font-semibold bg-red-50 text-red-700">
+                                        ⚠️ {risk.msg}
+                                      </div>
+                                    ))}
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      ) : (
+                        <div className="text-center py-8 text-slate-400 italic">No observation visits logged yet.</div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* PHOTOS TAB */}
+                  {detailTab === 'photos' && (
+                    <div className="space-y-4">
+                      <div className="flex justify-between items-center">
+                        <span className="text-[10px] font-bold text-slate-400 uppercase">Field Spot Photos</span>
+                        <div className="flex gap-2">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              quickActionTrialRef.current = activeSubTrial;
+                              setCameraMode('general');
+                              setIsCameraOpen(true);
+                            }}
+                            className="px-3 py-1.5 border rounded-lg text-xs font-bold text-slate-700 hover:bg-slate-50 flex items-center gap-1.5"
+                          >
+                            <Camera className="w-4 h-4 text-emerald-600" /> Camera
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              quickActionTrialRef.current = activeSubTrial;
+                              fileInputRef.current?.click();
+                            }}
+                            className="px-3 py-1.5 border rounded-lg text-xs font-bold text-slate-700 hover:bg-slate-50 flex items-center gap-1.5"
+                          >
+                            <ImageIcon className="w-4 h-4 text-emerald-600" /> Choose File
+                          </button>
+                        </div>
+                      </div>
+
+                      {safeJsonParse(activeSubTrial.PhotoURLs, []).length > 0 ? (
+                        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                          {safeJsonParse(activeSubTrial.PhotoURLs, []).map((photo, pIdx) => {
+                            const photoSrc = photo.url || photo.fileData || photo;
+                            return (
+                              <div key={pIdx} className="border rounded-2xl overflow-hidden shadow-sm bg-white flex flex-col">
+                                <div className="relative h-36 bg-black">
+                                  <img src={photoSrc} alt="" className="w-full h-full object-cover" />
+                                  <button
+                                    onClick={() => handleDeletePhoto(pIdx)}
+                                    className="absolute top-1.5 right-1.5 bg-black/60 text-white rounded-full p-1 hover:bg-red-600 transition"
+                                  >
+                                    <X className="w-3.5 h-3.5" />
+                                  </button>
+                                </div>
+                                <div className="p-3 space-y-1.5 text-xs">
+                                  <p className="font-semibold text-slate-700">{photo.label || `Photo ${pIdx + 1}`}</p>
+                                  <p className="text-slate-400">{photo.date}</p>
+                                  <div className="flex gap-1.5 pt-2 border-t">
+                                    <button
+                                      onClick={() => handleCropExistingPhoto(pIdx, photoSrc)}
+                                      className="flex-1 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded font-bold text-center"
+                                    >
+                                      Crop
+                                    </button>
+                                    <button
+                                      onClick={() => handleAnalyzeSinglePhoto(photoSrc, photo.date)}
+                                      disabled={aiGenRunning}
+                                      className="flex-1 py-1 bg-violet-600 hover:bg-violet-700 text-white rounded font-bold text-center"
+                                    >
+                                      AI Scan
+                                    </button>
+                                  </div>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      ) : (
+                        <div className="text-center py-8 text-slate-400 italic">No photos added yet. Snap or upload to perform AI Weed Identification.</div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* WEATHER TAB */}
+                  {detailTab === 'weather' && (
+                    <div className="space-y-4">
+                      <span className="text-[10px] font-bold text-slate-400 uppercase block">Application Meteorological Parameters</span>
+                      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm bg-slate-50 p-6 border rounded-2xl">
+                        <div>
+                          <span className="text-[10px] text-slate-400 block font-semibold">Temperature</span>
+                          <span className="font-bold text-slate-700 text-base">{activeSubTrial.Temperature || 'N/A'} °C</span>
+                        </div>
+                        <div>
+                          <span className="text-[10px] text-slate-400 block font-semibold">Relative Humidity</span>
+                          <span className="font-bold text-slate-700 text-base">{activeSubTrial.Humidity || 'N/A'} %</span>
+                        </div>
+                        <div>
+                          <span className="text-[10px] text-slate-400 block font-semibold">Windspeed</span>
+                          <span className="font-bold text-slate-700 text-base">{activeSubTrial.Windspeed || 'N/A'} km/h</span>
+                        </div>
+                        <div>
+                          <span className="text-[10px] text-slate-400 block font-semibold">Precipitation</span>
+                          <span className="font-bold text-slate-700 text-base">{activeSubTrial.Rain || 'N/A'} mm</span>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* CHART TAB */}
+                  {detailTab === 'chart' && (
+                    <div className="space-y-4">
+                      <span className="text-[10px] font-bold text-slate-400 uppercase block">Efficacy Curves</span>
+                      {obsData.sorted.length > 0 ? (
+                        <div className="h-72 bg-slate-50/50 p-6 border rounded-2xl flex flex-col justify-between">
+                          <div className="flex-1 relative">
+                            <svg className="w-full h-full" viewBox="0 0 500 200" preserveAspectRatio="none">
+                              {[0, 20, 40, 60, 80, 100].map(yVal => {
+                                const y = 200 - (yVal * 2);
+                                return <line key={yVal} x1="0" y1={y} x2="500" y2={y} stroke="#e2e8f0" strokeWidth="1" />;
+                              })}
+                              <polyline
+                                fill="none"
+                                stroke="#10b981"
+                                strokeWidth="3"
+                                points={obsData.sorted.map((o, idx) => {
+                                  const x = (idx / (obsData.sorted.length - 1 || 1)) * 500;
+                                  const y = 200 - (o.weedCover * 2);
+                                  return `${x},${y}`;
+                                }).join(' ')}
+                              />
+                            </svg>
+                          </div>
+                          <div className="flex justify-between pt-3 border-t text-[10px] font-bold text-slate-400">
+                            {obsData.sorted.map(o => (
+                              <span key={o.daa}>DAA {o.daa} ({o.weedCover}%)</span>
+                            ))}
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="text-center py-8 text-slate-400 italic">No efficacy visits logged yet.</div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* STATISTICS TAB */}
+                  {detailTab === 'statistics' && (
+                    <div className="space-y-4">
+                      <span className="text-[10px] font-bold text-slate-400 uppercase block">ANOVA Statistics & WCE Diagnostics</span>
+                      {statsData.hasStats ? (
+                        <div className="space-y-4 text-sm max-w-2xl">
+                          <div className="bg-emerald-50/50 border border-emerald-100 rounded-xl p-4 text-emerald-800">
+                            <p className="font-bold text-base">Mean WCE Efficacy: {statsData.renderMeanWce.toFixed(1)}%</p>
+                            <p className="text-xs mt-1">Coefficient of Variation (CV): {statsData.stats.anovaResults?.diagnostics?.cv || 'N/A'}%</p>
+                          </div>
+                          <div className="border rounded-xl overflow-hidden bg-white">
+                            <table className="w-full text-xs">
+                              <thead className="bg-slate-50 text-slate-500">
+                                <tr>
+                                  <th className="px-4 py-2.5 text-left">Source</th>
+                                  <th className="px-4 py-2.5 text-center">DF</th>
+                                  <th className="px-4 py-2.5 text-right">MS</th>
+                                </tr>
+                              </thead>
+                              <tbody className="divide-y text-slate-700 bg-white">
+                                <tr>
+                                  <td className="px-4 py-2.5 font-medium">Treatment</td>
+                                  <td className="px-4 py-2.5 text-center">{statsData.stats.anovaResults?.anovaTable?.treatment?.df || 0}</td>
+                                  <td className="px-4 py-2.5 text-right">{statsData.stats.anovaResults?.anovaTable?.treatment?.ms || 0}</td>
+                                </tr>
+                              </tbody>
+                            </table>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="bg-slate-50 p-6 border rounded-2xl text-center space-y-3 max-w-md">
+                          <p className="text-slate-500 text-xs">Run WCE calculations on the sub-trial observations.</p>
+                          <button
+                            onClick={async () => {
+                              if (obsData.sorted.length < 2) {
+                                window.dispatchEvent(new CustomEvent('app:toast', { detail: { msg: 'Need at least 2 observations to calculate statistics', type: 'error' } }));
+                                return;
+                              }
+                              const wceRows = obsData.sorted.map(obs => {
+                                const cover = parseFloat(obs.weedCover ?? 0) || 0;
+                                const wce = obs.daa === obsData.sorted[0].daa ? null : (obsData.baseCover > 0 ? Math.max(0, Math.min(100, (1 - cover / obsData.baseCover) * 100)) : 0);
+                                return { daa: obs.daa, wce };
+                              });
+                              const wces = wceRows.map(r => r.wce).filter(v => v !== null);
+                              const meanWce = wces.length ? wces.reduce((s, v) => s + v, 0) / wces.length : 0;
+                              const df = wces.length - 1;
+                              const result = {
+                                wce: wceRows,
+                                anovaResults: { anovaTable: { treatment: { source: 'Treatment', df, ms: 0 } }, diagnostics: { cv: 0 } },
+                                calculatedAt: new Date().toISOString()
+                              };
+                              const updated = { ...activeSubTrial, StatisticsJSON: JSON.stringify(result) };
+                              try {
+                                await updateTrial(updated, getAppState);
+                                updateState({ trials: state.trials.map(t => t.ID === activeSubTrial.ID ? updated : t) });
+                                window.dispatchEvent(new CustomEvent('app:toast', { detail: { msg: 'Calculated successfully!', type: 'success' } }));
+                              } catch {}
+                            }}
+                            className="px-4 py-2 bg-emerald-700 hover:bg-emerald-800 text-white rounded-lg text-xs font-bold transition shadow"
+                          >
+                            Calculate Statistics
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* QR CODE TAB */}
+                  {detailTab === 'qr' && (
+                    <div className="space-y-4 flex flex-col items-center justify-center p-6 bg-slate-50 rounded-2xl border">
+                      <span className="text-[10px] font-bold text-slate-400 uppercase block text-center">Printable QR Trial Spot Code</span>
+                      <div className="p-4 border-2 border-emerald-600 rounded-2xl bg-white shadow-md">
+                        <canvas ref={qrCanvasRef} className="w-44 h-44 block" />
+                      </div>
+                      <p className="text-xs text-slate-400 text-center max-w-sm">
+                        Scan code with any mobile device to view or log live data for this spot in the field.
+                      </p>
+                    </div>
+                  )}
+
+                  {/* EXPORT TAB */}
+                  {detailTab === 'export' && (
+                    <div className="space-y-4">
+                      <span className="text-[10px] font-bold text-slate-400 uppercase block">Export Sub-Trial Data</span>
+                      <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+                        <button
+                          onClick={() => generateComprehensivePdf(activeSubTrial, { formulations: state.formulations })}
+                          className="px-3.5 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition flex items-center gap-2"
+                        >
+                          <FileText className="w-4 h-4 text-emerald-600" /> PDF Report
+                        </button>
+                        <button
+                          onClick={() => generateScientificReport(activeSubTrial, { formulations: state.formulations })}
+                          className="px-3.5 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition flex items-center gap-2"
+                        >
+                          <FileText className="w-4 h-4 text-sky-600" /> Scientific PDF
+                        </button>
+                        <button
+                          onClick={() => generatePpt(activeSubTrial)}
+                          className="px-3.5 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition flex items-center gap-2"
+                        >
+                          <BarChart2 className="w-4 h-4 text-amber-600" /> PowerPoint
+                        </button>
+                        <button
+                          onClick={() => exportToCSV(activeSubTrial)}
+                          className="px-3.5 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition flex items-center gap-2"
+                        >
+                          <TrendingUp className="w-4 h-4 text-purple-600" /> CSV Dataset
+                        </button>
+                        <button
+                          onClick={() => exportHtmlReport(activeSubTrial)}
+                          className="px-3.5 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition flex items-center gap-2"
+                        >
+                          <Leaf className="w-4 h-4 text-teal-600" /> HTML view
+                        </button>
+                        <button
+                          onClick={() => exportTrialDocx(activeSubTrial, { formulations: state.formulations })}
+                          className="px-3.5 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition flex items-center gap-2"
+                        >
+                          <BookOpen className="w-4 h-4 text-indigo-600" /> Word Document
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          ) : (
+            // Overview view (either GIS workspace or Spot Directory)
+            <div className="space-y-6">
+              {/* Workspace Navigation Mode Toggle */}
+              <div className="flex bg-slate-200/50 p-1 rounded-xl w-fit">
+                <button
+                  onClick={() => setViewMode('gis')}
+                  className={`px-4 py-1.5 text-xs font-bold rounded-lg transition-all flex items-center gap-1.5 ${viewMode === 'gis' ? 'bg-white text-emerald-800 shadow-sm' : 'text-slate-500 hover:text-slate-800'}`}
+                >
+                  <MapIcon className="w-3.5 h-3.5" /> GIS Workspace & Analytics
+                </button>
+                <button
+                  onClick={() => setViewMode('spots')}
+                  className={`px-4 py-1.5 text-xs font-bold rounded-lg transition-all flex items-center gap-1.5 ${viewMode === 'spots' ? 'bg-white text-emerald-800 shadow-sm' : 'text-slate-500 hover:text-slate-800'}`}
+                >
+                  <Layers3 className="w-3.5 h-3.5" /> Spot Directory ({subTrials.length})
+                </button>
+              </div>
+
+              {viewMode === 'gis' ? (
+                // Full Width GIS Maps and Master Analytics
+                <div className="space-y-6">
+                  {/* Dashboard Navigation Tabs */}
+                  <div className="flex bg-slate-200/50 p-1 rounded-xl w-fit">
+                    <button
+                      onClick={() => setDashboardTab('map')}
+                      className={`px-4 py-1.5 text-xs font-bold rounded-lg transition-all ${dashboardTab === 'map' ? 'bg-white text-emerald-800 shadow-sm' : 'text-slate-500 hover:text-slate-800'}`}
+                    >
+                      <MapIcon className="inline-block w-3.5 h-3.5 mr-1" /> GIS Satellite Map
+                    </button>
+                    <button
+                      onClick={() => setDashboardTab('charts')}
+                      className={`px-4 py-1.5 text-xs font-bold rounded-lg transition-all ${dashboardTab === 'charts' ? 'bg-white text-emerald-800 shadow-sm' : 'text-slate-500 hover:text-slate-800'}`}
+                    >
+                      <BarChart2 className="inline-block w-3.5 h-3.5 mr-1" /> Efficacy Curves
+                    </button>
+                    <button
+                      onClick={() => setDashboardTab('ai')}
+                      className={`px-4 py-1.5 text-xs font-bold rounded-lg transition-all ${dashboardTab === 'ai' ? 'bg-white text-emerald-800 shadow-sm' : 'text-slate-500 hover:text-slate-800'}`}
+                    >
+                      <Sparkles className="inline-block w-3.5 h-3.5 mr-1" /> Master Report
+                    </button>
+                  </div>
+
+                  {/* Tab: Map */}
+                  {dashboardTab === 'map' && (
+                    <div className="bg-white rounded-3xl overflow-hidden shadow-sm border border-slate-100 flex flex-col h-[520px] relative">
+                      <div className="p-4 border-b border-slate-100 flex justify-between items-center bg-slate-50/50">
+                        <span className="font-bold text-slate-700 text-sm flex items-center gap-2">
+                          <MapIcon className="w-4 h-4 text-emerald-600" /> Esri Satellite Spatial Coordinates
+                        </span>
+                        <div className="text-[10px] font-bold text-slate-400 bg-slate-100 px-2 py-0.5 rounded-full">
+                          {subTrials.length} Monitoring Spots
+                        </div>
+                      </div>
+                      <div ref={mapContainerRef} className="flex-1 w-full h-full bg-slate-50" />
+                    </div>
+                  )}
+
+                  {/* Tab: Curves */}
+                  {dashboardTab === 'charts' && (
+                    <div className="bg-white rounded-3xl p-6 shadow-sm border border-slate-100">
+                      <h3 className="font-bold text-slate-800 text-base mb-2">Weed Cover Trajectories</h3>
+                      <p className="text-xs text-slate-400 mb-6">Compare weed cover reduction rates (%) across different sub-trial zones side-by-side.</p>
+
+                      {chartData.daas.length > 0 && chartData.datasets.length > 0 ? (
+                        <div className="h-72 flex flex-col justify-between">
+                          <div className="flex-1 relative">
+                            <svg className="w-full h-full" viewBox="0 0 500 200" preserveAspectRatio="none">
+                              {/* Y-axis lines */}
+                              {[0, 20, 40, 60, 80, 100].map(yVal => {
+                                const y = 200 - (yVal * 200 / 100);
+                                return (
+                                  <line key={yVal} x1="0" y1={y} x2="500" y2={y} stroke="#f1f5f9" strokeWidth="1" />
+                                );
+                              })}
+
+                              {/* Data Timelines */}
+                              {chartData.datasets.map((ds, dsIdx) => {
+                                const colors = ['#10b981', '#3b82f6', '#f59e0b', '#8b5cf6', '#ec4899', '#06b6d4'];
+                                const points = ds.data.map((val, idx) => {
+                                  if (val === null) return null;
+                                  const x = (idx / (chartData.daas.length - 1 || 1)) * 500;
+                                  const y = 200 - (val * 200 / 100);
+                                  return `${x},${y}`;
+                                }).filter(p => p !== null).join(' ');
+
+                                return points ? (
+                                  <polyline
+                                    key={ds.label}
+                                    fill="none"
+                                    stroke={colors[dsIdx % colors.length]}
+                                    strokeWidth="3"
+                                    points={points}
+                                  />
+                                ) : null;
+                              })}
+                            </svg>
+                          </div>
+
+                          {/* Legend */}
+                          <div className="flex flex-wrap gap-4 mt-4 pt-3 border-t border-slate-100">
+                            {chartData.datasets.map((ds, dsIdx) => {
+                              const colors = ['#10b981', '#3b82f6', '#f59e0b', '#8b5cf6', '#ec4899', '#06b6d4'];
+                              return (
+                                <div key={ds.label} className="flex items-center gap-1.5 text-xs text-slate-600 font-semibold font-sans">
+                                  <span className="w-3 h-3 rounded-full" style={{ backgroundColor: colors[dsIdx % colors.length] }} />
+                                  <span>{ds.label}</span>
                                 </div>
                               );
                             })}
                           </div>
-                        ) : (
-                          <div className="text-center py-8 text-slate-400 italic">No photos added yet. Snap or upload to perform AI Weed Identification.</div>
-                        )}
-                      </div>
-                    )}
-
-                    {/* WEATHER TAB */}
-                    {detailTab === 'weather' && (
-                      <div className="space-y-4">
-                        <span className="text-[10px] font-bold text-slate-400 uppercase block">Application Meteorological Parameters</span>
-                        <div className="grid grid-cols-2 gap-3 text-xs bg-slate-50 p-4 border rounded-2xl">
-                          <div>
-                            <span className="text-[9px] text-slate-400 block font-semibold">Temperature</span>
-                            <span className="font-bold text-slate-700">{activeSubTrial.Temperature || 'N/A'} °C</span>
-                          </div>
-                          <div>
-                            <span className="text-[9px] text-slate-400 block font-semibold">Relative Humidity</span>
-                            <span className="font-bold text-slate-700">{activeSubTrial.Humidity || 'N/A'} %</span>
-                          </div>
-                          <div>
-                            <span className="text-[9px] text-slate-400 block font-semibold">Windspeed</span>
-                            <span className="font-bold text-slate-700">{activeSubTrial.Windspeed || 'N/A'} km/h</span>
-                          </div>
-                          <div>
-                            <span className="text-[9px] text-slate-400 block font-semibold">Precipitation</span>
-                            <span className="font-bold text-slate-700">{activeSubTrial.Rain || 'N/A'} mm</span>
-                          </div>
                         </div>
-                      </div>
-                    )}
+                      ) : (
+                        <div className="py-16 text-center text-slate-400 italic">No historical visits logged yet.</div>
+                      )}
+                    </div>
+                  )}
 
-                    {/* CHART TAB */}
-                    {detailTab === 'chart' && (
-                      <div className="space-y-4">
-                        <span className="text-[10px] font-bold text-slate-400 uppercase block">Efficacy Curves</span>
-                        {obsData.sorted.length > 0 ? (
-                          <div className="h-56 bg-slate-50/50 p-4 border rounded-2xl flex flex-col justify-between">
-                            <div className="flex-1 relative">
-                              <svg className="w-full h-full" viewBox="0 0 500 200" preserveAspectRatio="none">
-                                {[0, 20, 40, 60, 80, 100].map(yVal => {
-                                  const y = 200 - (yVal * 2);
-                                  return <line key={yVal} x1="0" y1={y} x2="500" y2={y} stroke="#e2e8f0" strokeWidth="1" />;
-                                })}
-                                <polyline
-                                  fill="none"
-                                  stroke="#10b981"
-                                  strokeWidth="3"
-                                  points={obsData.sorted.map((o, idx) => {
-                                    const x = (idx / (obsData.sorted.length - 1 || 1)) * 500;
-                                    const y = 200 - (o.weedCover * 2);
-                                    return `${x},${y}`;
-                                  }).join(' ')}
-                                />
-                              </svg>
-                            </div>
-                            <div className="flex justify-between pt-2 border-t text-[9px] font-bold text-slate-400">
-                              {obsData.sorted.map(o => (
-                                <span key={o.daa}>DAA {o.daa} ({o.weedCover}%)</span>
-                              ))}
-                            </div>
-                          </div>
-                        ) : (
-                          <div className="text-center py-8 text-slate-400 italic">No efficacy visits logged yet.</div>
-                        )}
-                      </div>
-                    )}
-
-                    {/* STATISTICS TAB */}
-                    {detailTab === 'statistics' && (
-                      <div className="space-y-4">
-                        <span className="text-[10px] font-bold text-slate-400 uppercase block">ANOVA Statistics & WCE Diagnostics</span>
-                        {statsData.hasStats ? (
-                          <div className="space-y-3 text-xs">
-                            <div className="bg-emerald-50/50 border border-emerald-100 rounded-xl p-3 text-emerald-800">
-                              <p className="font-bold">Mean WCE Efficacy: {statsData.renderMeanWce.toFixed(1)}%</p>
-                              <p className="text-[10px] mt-0.5">Coefficient of Variation (CV): {statsData.stats.anovaResults?.diagnostics?.cv || 'N/A'}%</p>
-                            </div>
-                            <div className="border rounded-xl overflow-hidden">
-                              <table className="w-full text-[10px]">
-                                <thead className="bg-slate-50 text-slate-500">
-                                  <tr>
-                                    <th className="px-3 py-1.5 text-left">Source</th>
-                                    <th className="px-3 py-1.5 text-center">DF</th>
-                                    <th className="px-3 py-1.5 text-right">MS</th>
-                                  </tr>
-                                </thead>
-                                <tbody className="divide-y text-slate-700">
-                                  <tr>
-                                    <td className="px-3 py-1.5 font-medium">Treatment</td>
-                                    <td className="px-3 py-1.5 text-center">{statsData.stats.anovaResults?.anovaTable?.treatment?.df || 0}</td>
-                                    <td className="px-3 py-1.5 text-right">{statsData.stats.anovaResults?.anovaTable?.treatment?.ms || 0}</td>
-                                  </tr>
-                                </tbody>
-                              </table>
-                            </div>
-                          </div>
-                        ) : (
-                          <div className="bg-slate-50 p-4 border rounded-2xl text-center space-y-2">
-                            <p className="text-slate-400 text-xs">Run WCE calculations on the sub-trial observations.</p>
-                            <button
-                              onClick={async () => {
-                                if (obsData.sorted.length < 2) {
-                                  window.dispatchEvent(new CustomEvent('app:toast', { detail: { msg: 'Need at least 2 observations to calculate statistics', type: 'error' } }));
-                                  return;
-                                }
-                                const wceRows = obsData.sorted.map(obs => {
-                                  const cover = parseFloat(obs.weedCover ?? 0) || 0;
-                                  const wce = obs.daa === obsData.sorted[0].daa ? null : (obsData.baseCover > 0 ? Math.max(0, Math.min(100, (1 - cover / obsData.baseCover) * 100)) : 0);
-                                  return { daa: obs.daa, wce };
-                                });
-                                const wces = wceRows.map(r => r.wce).filter(v => v !== null);
-                                const meanWce = wces.length ? wces.reduce((s, v) => s + v, 0) / wces.length : 0;
-                                const df = wces.length - 1;
-                                const result = {
-                                  wce: wceRows,
-                                  anovaResults: { anovaTable: { treatment: { source: 'Treatment', df, ms: 0 } }, diagnostics: { cv: 0 } },
-                                  calculatedAt: new Date().toISOString()
-                                };
-                                const updated = { ...activeSubTrial, StatisticsJSON: JSON.stringify(result) };
-                                try {
-                                  await updateTrial(updated, getAppState);
-                                  updateState({ trials: state.trials.map(t => t.ID === activeSubTrial.ID ? updated : t) });
-                                  window.dispatchEvent(new CustomEvent('app:toast', { detail: { msg: 'Calculated successfully!', type: 'success' } }));
-                                } catch {}
-                              }}
-                              className="px-3 py-1.5 bg-emerald-700 hover:bg-emerald-800 text-white rounded-lg text-xs font-bold transition"
-                            >
-                              Calculate Statistics
-                            </button>
-                          </div>
-                        )}
-                      </div>
-                    )}
-
-                    {/* QR CODE TAB */}
-                    {detailTab === 'qr' && (
-                      <div className="space-y-4 flex flex-col items-center justify-center p-4">
-                        <span className="text-[10px] font-bold text-slate-400 uppercase block text-center">Printable QR Trial Spot Code</span>
-                        <div className="p-3 border-2 border-emerald-600 rounded-2xl bg-white shadow-md">
-                          <canvas ref={qrCanvasRef} className="w-44 h-44 block" />
+                  {/* Tab: Master Report & AI Narrative */}
+                  {dashboardTab === 'ai' && (
+                    <div className="bg-white rounded-3xl p-6 shadow-sm border border-slate-100 space-y-6">
+                      <div className="flex justify-between items-center pb-4 border-b">
+                        <div>
+                          <h3 className="font-bold text-slate-800 text-base flex items-center gap-2">
+                            <Sparkles className="w-5 h-5 text-violet-600 animate-pulse" /> Master Efficacy Report
+                          </h3>
+                          <p className="text-xs text-slate-400 mt-0.5">Unified report synthesizing all Sub-Trial outcomes in the workspace.</p>
                         </div>
-                        <p className="text-[10px] text-slate-400 text-center max-w-[200px]">
-                          Scan code with any mobile device to view or log live data for this spot in the field.
-                        </p>
-                      </div>
-                    )}
 
-                    {/* EXPORT TAB */}
-                    {detailTab === 'export' && (
-                      <div className="space-y-4">
-                        <span className="text-[10px] font-bold text-slate-400 uppercase block">Export Sub-Trial Data</span>
-                        <div className="grid grid-cols-2 gap-2.5">
+                        <div className="flex gap-2">
                           <button
-                            onClick={() => generateComprehensivePdf(activeSubTrial, { formulations: state.formulations })}
-                            className="px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition flex items-center gap-2"
+                            onClick={handleGenerateMasterReport}
+                            disabled={aiReportRunning}
+                            className="px-3.5 py-2 bg-violet-600 hover:bg-violet-700 text-white font-bold rounded-xl text-xs flex items-center gap-1.5 transition disabled:opacity-50"
                           >
-                            <FileText className="w-4 h-4 text-emerald-600" /> PDF Report
+                            <RefreshCw className={`w-3.5 h-3.5 ${aiReportRunning ? 'animate-spin' : ''}`} />
+                            {aiReportRunning ? 'Generating...' : 'Synthesize AI Summary'}
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* AI Output */}
+                      <div className="bg-slate-50/50 rounded-2xl p-4 border border-slate-100">
+                        <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">Executive Study Narrative</h4>
+                        {activeProject?._aiMasterSummary ? (
+                          <div className="text-sm text-slate-700 leading-relaxed whitespace-pre-wrap font-sans">
+                            {activeProject._aiMasterSummary}
+                          </div>
+                        ) : (
+                          <div className="text-slate-400 italic text-sm py-8 text-center">
+                            No narrative summary generated. Click "Synthesize AI Summary" to compile sub-trial findings.
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Export Options */}
+                      <div className="pt-4 border-t space-y-3">
+                        <span className="text-xs font-bold text-slate-500 uppercase tracking-wider block font-sans">Export Unified Master Study Report</span>
+                        <div className="grid grid-cols-2 md:grid-cols-3 gap-2.5">
+                          <button
+                            onClick={() => generateMasterComprehensivePdf(activeProject, subTrials, { formulations: state.formulations, aiSummary: activeProject?._aiMasterSummary })}
+                            className="px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition flex items-center gap-1.5"
+                          >
+                            <FileText className="w-4 h-4 text-emerald-600" /> Comprehensive PDF
                           </button>
                           <button
-                            onClick={() => generateScientificReport(activeSubTrial, { formulations: state.formulations })}
-                            className="px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition flex items-center gap-2"
+                            onClick={() => generateMasterScientificReport(activeProject, subTrials, { aiSummary: activeProject?._aiMasterSummary })}
+                            className="px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition flex items-center gap-1.5"
                           >
                             <FileText className="w-4 h-4 text-sky-600" /> Scientific PDF
                           </button>
                           <button
-                            onClick={() => generatePpt(activeSubTrial)}
-                            className="px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition flex items-center gap-2"
+                            onClick={() => generateMasterPpt(activeProject, subTrials)}
+                            className="px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition flex items-center gap-1.5"
                           >
-                            <BarChart2 className="w-4 h-4 text-amber-600" /> PowerPoint
+                            <BarChart2 className="w-4 h-4 text-amber-600" /> PowerPoint Deck
                           </button>
                           <button
-                            onClick={() => exportToCSV(activeSubTrial)}
-                            className="px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition flex items-center gap-2"
+                            onClick={() => exportMasterCSV(activeProject, subTrials)}
+                            className="px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition flex items-center gap-1.5"
                           >
                             <TrendingUp className="w-4 h-4 text-purple-600" /> CSV Dataset
                           </button>
                           <button
-                            onClick={() => exportHtmlReport(activeSubTrial)}
-                            className="px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition flex items-center gap-2"
+                            onClick={() => exportMasterHtml(activeProject, subTrials)}
+                            className="px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition flex items-center gap-1.5"
                           >
-                            <Leaf className="w-4 h-4 text-teal-600" /> HTML view
+                            <Leaf className="w-4 h-4 text-teal-600" /> Standalone HTML
                           </button>
                           <button
-                            onClick={() => exportTrialDocx(activeSubTrial, { formulations: state.formulations })}
-                            className="px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition flex items-center gap-2"
+                            onClick={() => exportMasterDocx(activeProject, subTrials)}
+                            className="px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition flex items-center gap-1.5"
                           >
                             <BookOpen className="w-4 h-4 text-indigo-600" /> Word Document
                           </button>
                         </div>
                       </div>
-                    )}
-
-                  </div>
+                    </div>
+                  )}
                 </div>
               ) : (
-                // Folder List View - Rendering Sub-Trials exactly like standard trial cards
+                // Full Width Directory view
                 <div className="bg-white rounded-3xl p-6 shadow-sm border border-slate-100 flex flex-col min-h-[560px]">
-                  <div className="flex justify-between items-center mb-4 border-b pb-3">
+                  <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-6 border-b pb-4">
                     <div>
-                      <h3 className="font-bold text-slate-800 text-sm flex items-center gap-2">
-                        <Layers3 className="w-4 h-4 text-emerald-600" /> Sub-Trial Monitoring Spots
+                      <h3 className="font-bold text-slate-800 text-base flex items-center gap-2 font-sans">
+                        <Layers3 className="w-5 h-5 text-emerald-600" /> Sub-Trial Monitoring Spots
                       </h3>
-                      <p className="text-[10px] text-slate-400">Standard trial cards managed inside this Master project workspace.</p>
+                      <p className="text-xs text-slate-400">Standard trial cards managed inside this Master project workspace.</p>
                     </div>
-                    <span className="text-[10px] text-slate-400 font-bold bg-slate-100 px-2 py-0.5 rounded">
-                      {subTrials.length} Spots Tracked
-                    </span>
+
+                    {/* Search & Sort Panel */}
+                    <div className="flex flex-wrap items-center gap-2">
+                      <div className="relative">
+                        <input
+                          type="text"
+                          placeholder="Search spots..."
+                          value={search}
+                          onChange={e => setSearch(e.target.value)}
+                          className="pl-8 pr-4 py-1.5 text-xs border rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-400 bg-slate-50/50 w-44"
+                        />
+                        <div className="absolute left-2.5 top-2.5 text-slate-400">
+                          <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" /></svg>
+                        </div>
+                      </div>
+
+                      <select
+                        value={filterResult}
+                        onChange={e => setFilterResult(e.target.value)}
+                        className="text-xs border rounded-lg px-2 py-1.5 bg-white focus:outline-none focus:ring-2 focus:ring-emerald-400"
+                      >
+                        <option value="">All Results</option>
+                        {['Excellent', 'Good', 'Fair', 'Poor', 'Pending'].map(r => <option key={r} value={r}>{r}</option>)}
+                      </select>
+
+                      <select
+                        value={filterRole}
+                        onChange={e => setFilterRole(e.target.value)}
+                        className="text-xs border rounded-lg px-2 py-1.5 bg-white focus:outline-none focus:ring-2 focus:ring-emerald-400"
+                      >
+                        <option value="">All Roles</option>
+                        <option value="control">Control Spot</option>
+                        <option value="standard">Standard Check</option>
+                      </select>
+
+                      <select
+                        value={sortBy}
+                        onChange={e => setSortBy(e.target.value)}
+                        className="text-xs border rounded-lg px-2 py-1.5 bg-white focus:outline-none focus:ring-2 focus:ring-emerald-400"
+                      >
+                        <option value="date-desc">Newest First</option>
+                        <option value="date-asc">Oldest First</option>
+                        <option value="name">By Formulation</option>
+                        <option value="obs">Most Observations</option>
+                      </select>
+                    </div>
                   </div>
 
-                  <div className="flex-1 overflow-y-auto space-y-4 pr-1 max-h-[600px]">
-                    {subTrials.length > 0 ? (
-                      <div className="grid grid-cols-1 gap-4">
-                        {subTrials.map(st => (
+                  <div className="flex-grow overflow-y-auto pr-1">
+                    {filteredSubTrials.length > 0 ? (
+                      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                        {filteredSubTrials.map(st => (
                           <TrialCard
                             key={st.ID}
                             trial={st}
@@ -2130,16 +2244,16 @@ export default function LargeScaleTrials({ onMenuClick }) {
                         ))}
                       </div>
                     ) : (
-                      <div className="h-full flex flex-col items-center justify-center text-center text-slate-400 italic py-16">
-                        <Calendar className="w-8 h-8 text-slate-200 mb-2" />
-                        No spots created yet. Click "+ Add Sub-Trial / Spot" to begin tracking.
+                      <div className="h-full flex flex-col items-center justify-center text-center text-slate-400 italic py-24 border-2 border-dashed rounded-3xl border-slate-100">
+                        <Calendar className="w-10 h-10 text-slate-200 mb-2" />
+                        No spots created yet or match current filters. Click "+ Add Sub-Trial / Spot" to begin.
                       </div>
                     )}
                   </div>
                 </div>
               )}
             </div>
-          </div>
+          )
         ) : (
           <div className="py-24 text-center bg-white border border-slate-100 rounded-3xl shadow-sm">
             <Compass className="w-16 h-16 mx-auto text-slate-200 mb-4 animate-pulse" />
@@ -2798,6 +2912,32 @@ export default function LargeScaleTrials({ onMenuClick }) {
             </div>
           </div>
         </Modal>
+      )}
+
+      {/* Floating Selection Bar for spots */}
+      {selectedForBulk.size > 0 && (
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 bg-slate-800 text-white px-5 py-3 rounded-full shadow-2xl flex items-center gap-4 z-50">
+          <span className="font-bold text-sm"><span className="bg-emerald-500 px-2 py-0.5 rounded-full mr-2">{selectedForBulk.size}</span>Selected</span>
+          <div className="h-4 w-px bg-slate-600" />
+          <button
+            onClick={() => {
+              const sel = subTrials.filter(t => selectedForBulk.has(t.ID));
+              exportMasterCSV(activeProject, sel);
+            }}
+            className="flex items-center gap-1.5 text-sm hover:text-emerald-400 transition"
+          >
+            <FileText className="w-4 h-4" /> Export CSV
+          </button>
+          <button
+            onClick={handleBulkDeleteSubTrials}
+            className="flex items-center gap-1.5 text-sm hover:text-red-400 transition"
+          >
+            <Trash2 className="w-4 h-4" /> Delete
+          </button>
+          <button onClick={() => setSelectedForBulk(new Set())} className="ml-1 text-slate-400 hover:text-white">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
       )}
     </div>
   );

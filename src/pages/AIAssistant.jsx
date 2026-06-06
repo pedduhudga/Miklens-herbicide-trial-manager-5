@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from 'react';
 import { useAppState } from '../hooks/useAppState.jsx';
 import TopBar from '../components/TopBar.jsx';
-import { Sparkles, SendHorizontal, Trash2, Copy, Check, Paperclip, X, Mic, MicOff, Image, Search, PlusCircle, MessageSquare } from 'lucide-react';
+import { Sparkles, SendHorizontal, Trash2, Copy, Check, Paperclip, X, Mic, MicOff, Image as ImageIcon, Search, PlusCircle, MessageSquare } from 'lucide-react';
 import { safeJsonParse } from '../utils/helpers.js';
 import { _callGeminiApiWithRetries, resetGeminiState } from '../services/ai.js';
 import { getAiChatSessions, saveAiChatSession, deleteAiChatSession } from '../services/dataLayer.js';
@@ -618,7 +618,7 @@ CRITICAL ANSWERING GUIDELINES:
             )}
             {attachedImage && (
               <div className="flex items-center gap-2 mb-2 px-3 py-1.5 bg-blue-50 border border-blue-100 rounded-lg">
-                <Image className="w-4 h-4 text-blue-500 shrink-0" />
+                <ImageIcon className="w-4 h-4 text-blue-500 shrink-0" />
                 <span className="text-xs text-blue-700 font-medium truncate flex-1">{attachedImage.name}</span>
                 <button onClick={() => setAttachedImage(null)} className="text-blue-400 hover:text-red-500">
                   <X className="w-3.5 h-3.5" />

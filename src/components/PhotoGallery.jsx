@@ -1,7 +1,7 @@
 // src/components/PhotoGallery.jsx
 import React, { useRef } from 'react';
 import CameraCapture from './CameraCapture.jsx';
-import { X, Image, RefreshCw } from 'lucide-react';
+import { X, Image as ImageIcon, RefreshCw } from 'lucide-react';
 
 /**
  * PhotoGallery – a reusable component that lets the user capture multiple photos
@@ -84,7 +84,7 @@ export default function PhotoGallery({
             className="p-2 rounded-full bg-emerald-100 hover:bg-emerald-200 transition"
             title="Upload from Gallery"
           >
-            <Image className="w-5 h-5 text-emerald-600" />
+            <ImageIcon className="w-5 h-5 text-emerald-600" />
           </button>
           <button
             onClick={triggerCamera}
