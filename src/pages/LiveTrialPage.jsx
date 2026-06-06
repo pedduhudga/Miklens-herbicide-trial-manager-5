@@ -512,8 +512,12 @@ export default function LiveTrialPage() {
             </h2>
             <div className="grid grid-cols-2 gap-2">
               {photos.map((p, i) => {
-                const src = p.url || p.fileData;
-                if (!src) return null;
+                const rawSrc = p.url || p.fileData;
+                if (!rawSrc) return null;
+                const driveMatch = typeof rawSrc === 'string' && rawSrc.includes('drive.google.com') && rawSrc.match(/(?:[?&]id=|\/d\/)([a-zA-Z0-9_-]{10,})/);
+                const src = driveMatch
+                  ? `https://drive.google.com/thumbnail?id=${driveMatch[1]}&sz=w600`
+                  : rawSrc;
                 return (
                   <div
                     key={i}
