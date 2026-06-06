@@ -962,6 +962,13 @@ export default function LargeScaleTrials({ onMenuClick }) {
   useEffect(() => {
     if (!L || !mapContainerRef.current) return;
 
+    // If a map instance already exists, but the container was unmounted/re-created in DOM,
+    // we must clean up the old instance to prevent holding onto a detached DOM element.
+    if (mapRef.current) {
+      mapRef.current.remove();
+      mapRef.current = null;
+    }
+
     if (!mapRef.current) {
       mapRef.current = L.map(mapContainerRef.current, { maxZoom: 22 }).setView([20.5937, 78.9629], 5);
       L.tileLayer('http://{s}.google.com/vt/lyrs=y&x={x}&y={y}&z={z}', {
@@ -1023,7 +1030,7 @@ export default function LargeScaleTrials({ onMenuClick }) {
     if (coords.length > 0) {
       mapRef.current.fitBounds(L.latLngBounds(coords).pad(0.25));
     }
-  }, [subTrials]);
+  }, [subTrials, dashboardTab, activeProjectId, selectedSubTrialId, viewMode]);
 
   // Listen for popup select event
   useEffect(() => {
