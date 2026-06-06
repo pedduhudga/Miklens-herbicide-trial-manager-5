@@ -1,8 +1,11 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
+import QRCodeLib from 'qrcode';
 import { useAppState } from '../hooks/useAppState.jsx';
 import TopBar from '../components/TopBar.jsx';
 import Modal from '../components/Modal.jsx';
 import CameraCapture from '../components/CameraCapture.jsx';
+import CropperModal from '../components/CropperModal.jsx';
+import TrialCard from '../components/TrialCard.jsx';
 import {
   addProject,
   deleteProject,
@@ -15,10 +18,10 @@ import {
   Plus, Trash2, MapPin, Calendar, Camera, Info, Sparkles, X,
   Compass, Map as MapIcon, RefreshCw, Layers, Thermometer, Wind, Droplets, CloudRain,
   Eye, CheckCircle, ChevronRight, BarChart2, Edit, ArrowLeft, FileText, Download,
-  TrendingUp, Leaf, SlidersHorizontal, BookOpen, Layers3
+  TrendingUp, Leaf, SlidersHorizontal, BookOpen, Layers3, Activity, FolderPlus, Hash, Clock, Navigation, Lock, Unlock, Copy, Share2, MoreVertical
 } from 'lucide-react';
-import { getAPIKeys } from '../services/multiProviderAI.js';
-import { calculateDAA, toDatetimeLocal, formatDate, formatDateTime } from '../utils/dateUtils.js';
+import { getAPIKeys, analyzePhoto } from '../services/multiProviderAI.js';
+import { calculateDAA, toDatetimeLocal, formatDate, formatDateTime, formatPhotoDate } from '../utils/dateUtils.js';
 import { safeJsonParse } from '../utils/helpers.js';
 import { validateEfficacyData } from '../utils/analysisUtils.js';
 import {
@@ -113,6 +116,32 @@ export default function LargeScaleTrials({ onMenuClick }) {
   const [gpsFetching, setGpsFetching] = useState(false);
   const [isCameraOpen, setIsCameraOpen] = useState(false);
 
+  // Additional states for sub-trials (matching standard Trials)
+  const [selectedForBulk, setSelectedForBulk] = useState(new Set());
+  const [openCardMenu, setOpenCardMenu] = useState(null);
+  const [detailTab, setDetailTab] = useState('info');
+  const [pendingPhotoAnalysis, setPendingPhotoAnalysis] = useState(null);
+  const [cropperOpen, setCropperOpen] = useState(false);
+  const [cropSource, setCropSource] = useState(null);
+  const [cameraMode, setCameraMode] = useState('general');
+  const [detectingCover, setDetectingCover] = useState(false);
+  const [coverDetectResult, setCoverDetectResult] = useState(null);
+  const [qrCardSize, setQrCardSize] = useState('id-card');
+  const [aiGenRunning, setAiGenRunning] = useState(false);
+  const [duplicateModal, setDuplicateModal] = useState(null);
+  const [duplicateFormulation, setDuplicateFormulation] = useState('');
+  const [duplicateDate, setDuplicateDate] = useState('');
+  const [duplicateDosage, setDuplicateDosage] = useState('');
+  const [weedIdLoading, setWeedIdLoading] = useState(false);
+  const [weedIdResult, setWeedIdResult] = useState(null);
+
+  // Refs
+  const quickActionTrialRef = useRef(null);
+  const cropCallbackRef = useRef(null);
+  const fileInputRef = useRef(null);
+  const qrCanvasRef = useRef(null);
+  const [qrGenerated, setQrGenerated] = useState(false);
+
   // Map refs
   const mapContainerRef = useRef(null);
   const mapRef = useRef(null);
@@ -133,6 +162,675 @@ export default function LargeScaleTrials({ onMenuClick }) {
   const activeSubTrial = useMemo(() => {
     return subTrials.find(t => t.ID === selectedSubTrialId);
   }, [subTrials, selectedSubTrialId]);
+
+  // Derivations for sub-trials (matching standard Trials detail tab)
+  const obsData = useMemo(() => {
+    if (!activeSubTrial) return { sorted: [], baseCover: 100 };
+    const sorted = validateEfficacyData(safeJsonParse(activeSubTrial.EfficacyDataJSON, [])).sort((a, b) => a.daa - b.daa);
+    const baseline = sorted[0];
+    const baseCover = baseline ? parseFloat(baseline.weedCover ?? 100) : 100;
+    return { sorted, baseCover };
+  }, [activeSubTrial]);
+
+  const daaCoverage = useMemo(() => {
+    if (!activeSubTrial) return { allDAAs: [], obsDAAs: [], photoDAAs: [], hasGaps: false };
+    const obs = validateEfficacyData(safeJsonParse(activeSubTrial.EfficacyDataJSON, []));
+    const photos = safeJsonParse(activeSubTrial.PhotoURLs, []);
+    const obsDAAs = obs.map(o => o.daa);
+    const photoDAAs = photos.map(p => {
+      if (!p.date || !activeSubTrial.Date) return 0;
+      const tDate = new Date(activeSubTrial.Date);
+      const pDate = new Date(p.date);
+      return Math.max(0, Math.round((pDate.getTime() - tDate.getTime()) / 86400000));
+    });
+    const allDAAs = Array.from(new Set([...obsDAAs, ...photoDAAs])).sort((a, b) => a - b);
+    const hasGaps = allDAAs.some(daa => !obsDAAs.includes(daa));
+    return { allDAAs, obsDAAs, photoDAAs, hasGaps };
+  }, [activeSubTrial]);
+
+  const statsData = useMemo(() => {
+    if (!activeSubTrial) return { stats: null, hasStats: false, renderWces: [], renderMeanWce: 0 };
+    const stats = activeSubTrial.StatisticsJSON ? (() => { try { return JSON.parse(activeSubTrial.StatisticsJSON); } catch(e) { return null; } })() : null;
+    const hasStats = stats && (stats.wce || stats.anovaResults);
+    const renderWces = (stats?.wce || []).map(r => r.wce).filter(v => v !== null && isFinite(v));
+    const renderMeanWce = renderWces.length ? renderWces.reduce((s, v) => s + v, 0) / renderWces.length : 0;
+    return { stats, hasStats, renderWces, renderMeanWce };
+  }, [activeSubTrial]);
+
+  // Color mappings matching TrialCard
+  const RESULT_COLORS = {
+    'Excellent': 'bg-emerald-100 text-emerald-700 border-emerald-200',
+    'Good': 'bg-blue-100 text-blue-700 border-blue-200',
+    'Fair': 'bg-amber-100 text-amber-700 border-amber-200',
+    'Poor': 'bg-red-100 text-red-700 border-red-200',
+    'Control': 'bg-purple-100 text-purple-700 border-purple-200',
+  };
+
+  const STATUS_CLS = {
+    'Active': 'bg-slate-100 text-slate-700 border-slate-200',
+    'Slight Injury': 'bg-blue-50 text-blue-700 border-blue-100',
+    'Moderate Injury': 'bg-amber-50 text-amber-700 border-amber-100',
+    'Severe Injury': 'bg-orange-50 text-orange-700 border-orange-100',
+    'Dead/Desiccated': 'bg-red-50 text-red-700 border-red-100',
+  };
+
+  // Card toggle & detail view callbacks
+  const toggleBulk = useCallback((id) => {
+    setSelectedForBulk(prev => {
+      const n = new Set(prev);
+      n.has(id) ? n.delete(id) : n.add(id);
+      return n;
+    });
+  }, []);
+
+  const toggleMenu = useCallback((id) => {
+    setOpenCardMenu(prev => prev === id ? null : id);
+  }, []);
+
+  const onViewDetails = useCallback((trial) => {
+    setSelectedSubTrialId(trial.ID);
+    setDetailTab('info');
+    setOpenCardMenu(null);
+  }, []);
+
+  const onEdit = useCallback((trial) => {
+    setEditingSubTrial(trial);
+    setSubTrialForm({
+      FormulationName: trial.FormulationName || '',
+      InvestigatorName: trial.InvestigatorName || '',
+      Date: toDatetimeLocal(trial.Date),
+      Location: trial.Location || '',
+      Dosage: trial.Dosage || '',
+      Lat: trial.Lat || '',
+      Lon: trial.Lon || '',
+      WeedSpecies: trial.WeedSpecies || '',
+      Result: trial.Result || 'Pending',
+      Notes: trial.Notes || '',
+      Conclusion: trial.Conclusion || '',
+      IsControl: trial.IsControl === true || trial.IsControl === 'true',
+      IsStandardCheck: trial.IsStandardCheck === true || trial.IsStandardCheck === 'true',
+      IsCompleted: trial.IsCompleted === true || trial.IsCompleted === 'true',
+      Replication: trial.Replication || 'R1',
+      PlotNumber: trial.PlotNumber || '',
+      Temperature: trial.Temperature || '',
+      Humidity: trial.Humidity || '',
+      Windspeed: trial.Windspeed || '',
+      Rain: trial.Rain || '',
+      SoilPH: trial.SoilPH || '',
+      SoilClay: trial.SoilClay || '',
+      SoilSand: trial.SoilSand || '',
+      SoilOC: trial.SoilOC || '',
+      SoilTexture: trial.SoilTexture || '',
+      ApplicationTiming: trial.ApplicationTiming || 'POST',
+      WeedGrowthStage: trial.WeedGrowthStage || 'Vegetative',
+      EfficacyDataJSON: trial.EfficacyDataJSON || '[]',
+      PhotoURLs: trial.PhotoURLs || '[]',
+      WeedPhotosJSON: trial.WeedPhotosJSON || '[]',
+      AISummariesJSON: trial.AISummariesJSON || '{}'
+    });
+    setIsSubTrialModalOpen(true);
+    setOpenCardMenu(null);
+  }, []);
+
+  const onDuplicate = useCallback((trial) => {
+    setDuplicateModal(trial);
+    setDuplicateFormulation(trial.FormulationName || '');
+    setDuplicateDate(toDatetimeLocal(new Date()));
+    setDuplicateDosage(trial.Dosage || '');
+    setOpenCardMenu(null);
+  }, []);
+
+  const onMoveToProject = useCallback(async (trial) => {
+    const activeProjects = (state.projects || []).filter(p => p.Design === 'LargeScale');
+    if (activeProjects.length <= 1) {
+      window.dispatchEvent(new CustomEvent('app:toast', { detail: { msg: 'No other large field workspaces to move to.', type: 'info' } }));
+      return;
+    }
+    const projectList = activeProjects.map((p, i) => `${i + 1}. ${p.Name}`).join('\n');
+    const choice = window.prompt(`Move sub-trial to workspace:\n\n${projectList}\n\nEnter number:`);
+    if (!choice) return;
+    const idx = parseInt(choice) - 1;
+    if (idx < 0 || idx >= activeProjects.length) return;
+    const updated = { ...trial, ProjectID: activeProjects[idx].ID };
+    try {
+      await updateTrial(updated, getAppState);
+      updateState({ trials: state.trials.map(t => t.ID === trial.ID ? updated : t) });
+      if (selectedSubTrialId === trial.ID) setSelectedSubTrialId('');
+      window.dispatchEvent(new CustomEvent('app:toast', { detail: { msg: `Moved to workspace "${activeProjects[idx].Name}"`, type: 'success' } }));
+    } catch {
+      window.dispatchEvent(new CustomEvent('app:toast', { detail: { msg: 'Failed to move sub-trial.', type: 'error' } }));
+    }
+  }, [state.projects, state.trials, selectedSubTrialId, getAppState, updateState]);
+
+  const onActivateToggle = useCallback(async (trial) => {
+    const updated = { ...trial, IsLive: String(trial.IsLive) === 'false' };
+    try {
+      await updateTrial(updated, getAppState);
+      updateState({ trials: state.trials.map(t => t.ID === trial.ID ? updated : t) });
+      window.dispatchEvent(new CustomEvent('app:toast', { detail: { msg: `Sub-trial ${updated.IsLive ? 'activated' : 'deactivated'}`, type: 'success' } }));
+    } catch {
+      window.dispatchEvent(new CustomEvent('app:toast', { detail: { msg: 'Failed to update activation status.', type: 'error' } }));
+    }
+  }, [state.trials, getAppState, updateState]);
+
+  const onMarkComplete = useCallback(async (trial) => {
+    const updated = { ...trial, IsCompleted: true };
+    try {
+      await updateTrial(updated, getAppState);
+      updateState({ trials: state.trials.map(t => t.ID === trial.ID ? updated : t) });
+      window.dispatchEvent(new CustomEvent('app:toast', { detail: { msg: 'Sub-trial finalized.', type: 'success' } }));
+    } catch {
+      window.dispatchEvent(new CustomEvent('app:toast', { detail: { msg: 'Failed to finalize sub-trial.', type: 'error' } }));
+    }
+  }, [state.trials, getAppState, updateState]);
+
+  const onQuickRate = useCallback(async (trial, rating) => {
+    const newRating = trial.Result === rating ? '' : rating;
+    const updated = { ...trial, Result: newRating };
+    try {
+      await updateTrial(updated, getAppState);
+      updateState({ trials: state.trials.map(t => t.ID === trial.ID ? updated : t) });
+      window.dispatchEvent(new CustomEvent('app:toast', { detail: { msg: 'Rating updated!', type: 'success' } }));
+    } catch {
+      window.dispatchEvent(new CustomEvent('app:toast', { detail: { msg: 'Failed to update rating.', type: 'error' } }));
+    }
+  }, [state.trials, getAppState, updateState]);
+
+  const onQuickPhoto = useCallback((trial) => {
+    quickActionTrialRef.current = trial;
+    setCameraMode('general');
+    setIsCameraOpen(true);
+  }, []);
+
+  const onQuickGalleryUpload = useCallback((trial) => {
+    quickActionTrialRef.current = trial;
+    fileInputRef.current?.click();
+  }, []);
+
+  // Duplicate handler confirm
+  const handleDuplicateConfirm = async () => {
+    if (!duplicateModal) return;
+    const isCompleted = duplicateModal.IsCompleted === true || duplicateModal.IsCompleted === 'true';
+    const payload = {
+      ...duplicateModal,
+      ID: `sub_${Date.now()}`,
+      FormulationName: duplicateFormulation,
+      Date: duplicateDate || new Date().toISOString(),
+      Dosage: duplicateDosage,
+      IsCompleted: false,
+      Result: 'Pending',
+      EfficacyDataJSON: '[]',
+      PhotoURLs: '[]',
+      WeedPhotosJSON: '[]',
+      AISummariesJSON: '{}',
+      CreatedAt: new Date().toISOString(),
+      UpdatedAt: new Date().toISOString()
+    };
+    try {
+      await addTrial(payload, getAppState);
+      updateState({ trials: [...state.trials, payload] });
+      setDuplicateModal(null);
+      window.dispatchEvent(new CustomEvent('app:toast', { detail: { msg: 'Sub-trial duplicated successfully!', type: 'success' } }));
+    } catch {
+      window.dispatchEvent(new CustomEvent('app:toast', { detail: { msg: 'Failed to duplicate sub-trial.', type: 'error' } }));
+    }
+  };
+
+  // AI & Photo Processing Helpers
+  const openCropperFor = (dataUrl, callback) => {
+    setCropSource(dataUrl);
+    cropCallbackRef.current = callback;
+    setCropperOpen(true);
+  };
+
+  const handleCropComplete = (croppedUrl) => {
+    setCropperOpen(false);
+    setCropSource(null);
+    if (cropCallbackRef.current) {
+      cropCallbackRef.current(croppedUrl);
+      cropCallbackRef.current = null;
+    }
+  };
+
+  const promptPhotoDate = (dataUrl, targetTrial = null) => {
+    setPendingPhotoAnalysis({ dataUrl, date: toDatetimeLocal(new Date()), targetTrial });
+  };
+
+  const saveAndAnalyzePhoto = async (dataUrl, photoDateStr, targetTrialOverride = null) => {
+    const targetTrial = targetTrialOverride || activeSubTrial;
+    if (!targetTrial) return;
+    setAiGenRunning(true);
+
+    const photoDate = formatPhotoDate(photoDateStr || new Date().toISOString());
+    const fileName = `photo_sub_${targetTrial.ID}_${Date.now()}.jpg`;
+    const tempId = `local_${Date.now()}`;
+
+    const projectName = activeProject?.Name || 'LargeScale Field Trials';
+    const dosageSuffix = targetTrial.Dosage ? ` (${targetTrial.Dosage})` : '';
+    const trialNameWithDate = `${targetTrial.FormulationName || 'Unknown Spot'}${dosageSuffix} (${targetTrial.Date ? targetTrial.Date.split('T')[0] : photoDate})`.trim();
+    const folderPath = [projectName, trialNameWithDate];
+
+    // Optimistically add a placeholder
+    const photoEntry = { tempId, fileData: dataUrl, date: photoDate, label: cameraMode === 'weed' ? 'Weed Photo' : 'Field Observation', identifications: [] };
+    const photosOptimistic = [...safeJsonParse(targetTrial.PhotoURLs, []), photoEntry];
+    const optimisticTrial = { ...targetTrial, PhotoURLs: JSON.stringify(photosOptimistic) };
+    updateState({ trials: state.trials.map(t => t.ID === optimisticTrial.ID ? optimisticTrial : t) });
+    if (selectedSubTrialId === targetTrial.ID) setSelectedSubTrialId(optimisticTrial.ID);
+
+    window.dispatchEvent(new CustomEvent('app:toast', { detail: { msg: 'Uploading field photo...', type: 'info' } }));
+
+    try {
+      const uploadResult = await uploadPhoto({
+        trialId: targetTrial.ID,
+        fileData: dataUrl,
+        mimeType: 'image/jpeg',
+        fileName,
+        isWeed: cameraMode === 'weed',
+        label: photoEntry.label,
+        date: photoDate,
+        folderPath,
+      }, getAppState);
+
+      const driveUrl = uploadResult?.url || uploadResult?.fileUrl || null;
+      const currentPhotos = safeJsonParse(targetTrial.PhotoURLs, []).filter(p => p.tempId !== tempId);
+      const finalEntry = driveUrl
+        ? { url: driveUrl, date: photoDate, label: photoEntry.label, identifications: [] }
+        : { ...photoEntry, tempId: undefined };
+      currentPhotos.push(finalEntry);
+
+      const updatedTrial = { ...targetTrial, PhotoURLs: JSON.stringify(currentPhotos) };
+      updateState({ trials: state.trials.map(t => t.ID === updatedTrial.ID ? updatedTrial : t) });
+      if (selectedSubTrialId === targetTrial.ID) setSelectedSubTrialId(updatedTrial.ID);
+
+      await updateTrial({ ID: updatedTrial.ID, PhotoURLs: updatedTrial.PhotoURLs }, getAppState);
+
+      const trialDate = new Date(targetTrial.Date);
+      const pDate = new Date(photoDate);
+      const daa = Math.max(0, Math.round((pDate.getTime() - trialDate.getTime()) / 86400000));
+
+      // AI Analysis
+      const keys = getAPIKeys('gemini-3-flash');
+      if (keys.length) {
+        window.dispatchEvent(new CustomEvent('app:toast', { detail: { msg: 'Analyzing photo with AI...', type: 'info' } }));
+        const result = await analyzePhoto(dataUrl, {
+          treatment: targetTrial.FormulationName,
+          daa,
+          rep: targetTrial.Replication || 'R1'
+        }, (msg) => {
+          window.dispatchEvent(new CustomEvent('app:toast', { detail: { msg, type: 'info' } }));
+        });
+
+        if (result.success) {
+          await createObservationFromAI(targetTrial, daa, result.data, photoDate, driveUrl || dataUrl);
+        }
+      }
+    } catch (e) {
+      console.error(e);
+      window.dispatchEvent(new CustomEvent('app:toast', { detail: { msg: 'Failed to save and analyze photo', type: 'error' } }));
+    } finally {
+      setAiGenRunning(false);
+      setPendingPhotoAnalysis(null);
+    }
+  };
+
+  const createObservationFromAI = async (trial, daa, aiData, obsDate = null, photoUrl = null) => {
+    const latestTrial = state.trials.find(t => t.ID === trial.ID) || trial;
+    const efficacyData = validateEfficacyData(safeJsonParse(latestTrial.EfficacyDataJSON, []));
+
+    const normalizedWeeds = (aiData.weeds || []).map(w => ({
+      species: w.species || 'Unknown',
+      cover: typeof w.cover === 'number' ? w.cover : parseFloat(w.cover || 0),
+      status: String(w.status || '').trim(),
+      growthStage: String(w.growthStage || '').trim(),
+      notes: String(w.notes || '').trim()
+    }));
+
+    const totalWeedCover = typeof aiData.totalWeedCover === 'number'
+      ? aiData.totalWeedCover
+      : normalizedWeeds.reduce((sum, w) => sum + (w.cover || 0), 0);
+
+    const aiNotes = [];
+    if (aiData.efficacyAssessment) aiNotes.push(aiData.efficacyAssessment);
+    if (aiData.notes) aiNotes.push(aiData.notes);
+
+    const newObs = {
+      date: obsDate || toDatetimeLocal(new Date()),
+      daa: Number(daa),
+      weedCover: totalWeedCover,
+      weedDetails: normalizedWeeds.length > 0 ? normalizedWeeds : [{ species: 'No weeds detected', cover: 0, status: '', notes: aiData.notes || 'AI-analyzed' }],
+      notes: aiNotes.join(' | ') || `AI-analyzed on ${formatDateTime(new Date())}`,
+      aiConfidence: aiData.confidence || 'MEDIUM',
+      aiEfficacyAssessment: aiData.efficacyAssessment || '',
+      competitionLevel: aiData.competitionLevel || '',
+      status: 'Analyzed',
+      source: 'AI',
+      photoUrl: photoUrl || ''
+    };
+
+    const existingIdx = efficacyData.findIndex(o => o.daa === Number(daa));
+    if (existingIdx >= 0) {
+      efficacyData[existingIdx] = newObs;
+    } else {
+      efficacyData.push(newObs);
+    }
+    efficacyData.sort((a, b) => a.daa - b.daa);
+
+    let resultRating = 'Unrated';
+    if (efficacyData.length > 0) {
+      const latestObs = [...efficacyData].sort((a, b) => (parseFloat(b.daa) || 0) - (parseFloat(a.daa) || 0))[0];
+      const remainingCover = latestObs.weedCover || 0;
+      if (remainingCover <= 10) resultRating = 'Excellent';
+      else if (remainingCover <= 25) resultRating = 'Good';
+      else if (remainingCover <= 50) resultRating = 'Fair';
+      else resultRating = 'Poor';
+    }
+
+    const updated = {
+      ...latestTrial,
+      EfficacyDataJSON: JSON.stringify(efficacyData),
+      Result: resultRating,
+      WeedSpecies: normalizedWeeds.length > 0 ? normalizedWeeds.map(w => w.species).join(', ') : 'No weeds detected',
+    };
+
+    updateState({ trials: state.trials.map(t => t.ID === updated.ID ? updated : t) });
+    if (selectedSubTrialId === latestTrial.ID) setSelectedSubTrialId(updated.ID);
+
+    try {
+      await updateTrial({
+        ID: latestTrial.ID,
+        EfficacyDataJSON: updated.EfficacyDataJSON,
+        Result: updated.Result,
+        WeedSpecies: updated.WeedSpecies
+      }, getAppState);
+      window.dispatchEvent(new CustomEvent('app:toast', { detail: { msg: 'AI analysis and observation logged!', type: 'success' } }));
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const analyzeWeedCoverFromPixels = useCallback((imageDataUrl) => {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => {
+        try {
+          const canvas = document.createElement('canvas');
+          const maxDim = 800;
+          let w = img.width, h = img.height;
+          if (w > maxDim) { h = (h / w) * maxDim; w = maxDim; }
+          if (h > maxDim) { w = (w / h) * maxDim; h = maxDim; }
+          canvas.width = w; canvas.height = h;
+          const ctx = canvas.getContext('2d');
+          ctx.drawImage(img, 0, 0, w, h);
+          const data = ctx.getImageData(0, 0, w, h).data;
+          let total = 0, green = 0, brown = 0;
+          for (let i = 0; i < data.length; i += 4) {
+            const r = data[i], g = data[i+1], b = data[i+2];
+            total++;
+            const gli = (2*g - r - b) / (2*g + r + b + 1);
+            if (gli > 0.05) { green++; }
+            else {
+              const max = Math.max(r,g,b), min = Math.min(r,g,b), diff = max - min;
+              const h2 = max === 0 ? 0 : max === r ? 60*((g-b)/diff%6) : max === g ? 60*((b-r)/diff+2) : 60*((r-g)/diff+4);
+              const s = max === 0 ? 0 : (diff/max)*100, v = max/2.55;
+              if (h2 >= 20 && h2 <= 55 && s > 12 && v > 20 && v < 85) brown++;
+            }
+          }
+          const cover = Math.round(((green + brown) / total) * 100);
+          resolve({ cover, greenPct: Math.round((green/total)*100), brownPct: Math.round((brown/total)*100), confidence: Math.min(95, 60 + Math.round(total/2000)), source: 'pixel' });
+        } catch(e) { reject(e); }
+      };
+      img.onerror = () => reject(new Error('Failed to load image'));
+      img.src = imageDataUrl;
+    });
+  }, []);
+
+  const detectWeedCoverAI = useCallback(async (imageUrl) => {
+    setDetectingCover(true);
+    setCoverDetectResult(null);
+    try {
+      const apiKey = state.settings?.geminiApiKey || (state.settings?.geminiApiKeys || state.settings?.apiKeys || [])[0];
+      let dataUrl = imageUrl;
+      if (typeof imageUrl === 'string' && !imageUrl.startsWith('data:')) {
+        const blob = await fetch(imageUrl, { mode: 'cors' }).then(r => r.blob());
+        dataUrl = await new Promise((res, rej) => { const fr = new FileReader(); fr.onloadend = () => res(fr.result); fr.onerror = rej; fr.readAsDataURL(blob); });
+      }
+      const pixelResult = await analyzeWeedCoverFromPixels(dataUrl);
+
+      if (apiKey) {
+        try {
+          const mimeType = dataUrl.split(';')[0].split(':')[1] || 'image/jpeg';
+          const base64 = dataUrl.split(',')[1];
+          if (base64) {
+            const resp = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key=${apiKey}`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ contents: [{ parts: [
+                { text: 'Analyze this field plot image. Estimate the percentage (0-100) of ground covered by weeds (both green and brown/burnt). Respond with ONLY a number like "45".' },
+                { inlineData: { mimeType, data: base64 } }
+              ]}] })
+            });
+            const d = await resp.json();
+            const txt = d?.candidates?.[0]?.content?.parts?.[0]?.text || '';
+            const m2 = txt.match(/\d+/);
+            if (m2) {
+              const cover = Math.min(100, Math.max(0, parseInt(m2[0])));
+              const result = { cover, confidence: 90, source: 'AI (Gemini)', greenPct: pixelResult.greenPct, brownPct: pixelResult.brownPct };
+              setCoverDetectResult(result);
+              return result;
+            }
+          }
+        } catch(aiErr) {
+          console.warn('Gemini vision failed, using pixel fallback:', aiErr.message);
+        }
+      }
+      setCoverDetectResult(pixelResult);
+      return pixelResult;
+    } catch(e) {
+      console.error(e);
+      return null;
+    } finally {
+      setDetectingCover(false);
+    }
+  }, [state.settings, analyzeWeedCoverFromPixels]);
+
+  const getClimateRisks = useCallback((temp, wind, rain) => {
+    const risks = [];
+    const t = parseFloat(temp), w = parseFloat(wind), r = parseFloat(rain);
+    if (isFinite(t)) {
+      if (t > 30) risks.push({ type: 'warning', msg: `Heat stress risk (${t}°C > 30°C) — may reduce efficacy.` });
+      if (t < 5)  risks.push({ type: 'info',    msg: `Cold conditions (${t}°C) — slow herbicide uptake.` });
+    }
+    if (isFinite(w)) {
+      if (w > 15) risks.push({ type: 'danger',  msg: `High wind (${w} km/h) — severe spray drift risk.` });
+      else if (w > 10) risks.push({ type: 'warning', msg: `Moderate wind (${w} km/h) — use low-drift nozzles.` });
+    }
+    if (isFinite(r) && r > 0) risks.push({ type: 'danger', msg: `Rain (${r} mm) — wash-off risk if not rain-fast.` });
+    return risks;
+  }, []);
+
+  const fetchObsWeather = useCallback(async (date) => {
+    if (!activeSubTrial?.Lat || !activeSubTrial?.Lon) return;
+    try {
+      const url = `https://api.open-meteo.com/v1/forecast?latitude=${activeSubTrial.Lat}&longitude=${activeSubTrial.Lon}&current=temperature_2m,relative_humidity_2m,wind_speed_10m,precipitation&wind_speed_unit=kmh`;
+      const r = await fetch(url);
+      const d = await r.json();
+      const c = d.current;
+      if (c) {
+        setVisitForm(prev => ({ ...prev,
+          weatherTemp: c.temperature_2m ?? prev.weatherTemp,
+          weatherHumidity: c.relative_humidity_2m ?? prev.weatherHumidity,
+          weatherWind: c.wind_speed_10m ?? prev.weatherWind,
+          weatherRain: c.precipitation ?? prev.weatherRain,
+        }));
+        window.dispatchEvent(new CustomEvent('app:toast', { detail: { msg: 'Weather synced for observation', type: 'success' } }));
+      }
+    } catch(e) {
+      window.dispatchEvent(new CustomEvent('app:toast', { detail: { msg: 'Weather fetch failed', type: 'info' } }));
+    }
+  }, [activeSubTrial]);
+
+  const identifyWeedFromPhoto = useCallback(async (imageDataUrl) => {
+    setWeedIdLoading(true);
+    setWeedIdResult(null);
+    const apiKey = state.settings?.geminiApiKey || (state.settings?.geminiApiKeys || state.settings?.apiKeys || [])[0];
+    if (!apiKey) {
+      window.dispatchEvent(new CustomEvent('app:toast', { detail: { msg: 'Add a Gemini API key in Settings', type: 'error' } }));
+      setWeedIdLoading(false);
+      return;
+    }
+    try {
+      const mimeType = imageDataUrl.split(';')[0].split(':')[1];
+      const base64 = imageDataUrl.split(',')[1];
+      const resp = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent?key=${apiKey}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ contents: [{ parts: [
+          { text: 'Identify weed species in this field photo. For each weed, provide: 1) Scientific name, 2) Common name, 3) Estimated cover% of that species in the frame, 4) Growth stage. Format as JSON array: [{"name":"...","commonName":"...","cover":0,"growthStage":"...","confidence":0.0}]. Confidence 0-1.' },
+          { inlineData: { mimeType, data: base64 } }
+        ]}] })
+      });
+      const d = await resp.json();
+      const txt = d?.candidates?.[0]?.content?.parts?.[0]?.text || '';
+      const jsonMatch = txt.match(/\[.*\]/s);
+      if (jsonMatch) {
+        const weeds = JSON.parse(jsonMatch[0]);
+        setWeedIdResult(weeds);
+      } else {
+        setWeedIdResult([{ name: 'Unknown', commonName: txt.slice(0, 120), cover: 0, growthStage: '', confidence: 0.5 }]);
+      }
+    } catch(e) {
+      window.dispatchEvent(new CustomEvent('app:toast', { detail: { msg: 'Weed ID failed: ' + e.message, type: 'error' } }));
+    } finally {
+      setWeedIdLoading(false);
+    }
+  }, [state.settings]);
+
+  const handleCropExistingPhoto = (idx, currentSrc) => {
+    openCropperFor(currentSrc, async (croppedUrl) => {
+      const photos = safeJsonParse(activeSubTrial.PhotoURLs, []);
+      photos[idx] = { ...photos[idx], fileData: croppedUrl, url: undefined };
+      const updated = { ...activeSubTrial, PhotoURLs: JSON.stringify(photos) };
+      updateState({ trials: state.trials.map(t => t.ID === updated.ID ? updated : t) });
+      if (selectedSubTrialId === activeSubTrial.ID) setSelectedSubTrialId(updated.ID);
+      try { await updateTrial({ ID: updated.ID, PhotoURLs: updated.PhotoURLs }, getAppState); } catch (e) {}
+      window.dispatchEvent(new CustomEvent('app:toast', { detail: { msg: 'Photo cropped & saved', type: 'success' } }));
+    });
+  };
+
+  const handleDeletePhoto = async (idx) => {
+    if (!activeSubTrial || !window.confirm('Delete this photo?')) return;
+    const photos = safeJsonParse(activeSubTrial.PhotoURLs, []);
+    const deletedPhoto = photos[idx];
+    photos.splice(idx, 1);
+
+    let efficacyData = validateEfficacyData(safeJsonParse(activeSubTrial.EfficacyDataJSON, []));
+    if (deletedPhoto) {
+      const deletedUrl = deletedPhoto.fileData || deletedPhoto.url || deletedPhoto;
+      if (deletedUrl) {
+        efficacyData = efficacyData.filter(obs => obs.photoUrl !== deletedUrl);
+      }
+    }
+
+    const resultRating = 'Pending';
+    const updated = {
+      ...activeSubTrial,
+      PhotoURLs: JSON.stringify(photos),
+      EfficacyDataJSON: JSON.stringify(efficacyData),
+      Result: resultRating,
+      AISummariesJSON: '{}'
+    };
+    updateState({ trials: state.trials.map(t => t.ID === updated.ID ? updated : t) });
+    if (selectedSubTrialId === activeSubTrial.ID) setSelectedSubTrialId(updated.ID);
+    try {
+      await updateTrial({
+        ID: updated.ID,
+        PhotoURLs: updated.PhotoURLs,
+        EfficacyDataJSON: updated.EfficacyDataJSON,
+        Result: updated.Result,
+        AISummariesJSON: '{}'
+      }, getAppState);
+    } catch (e) {}
+  };
+
+  const generateAISummary = async () => {
+    if (!activeSubTrial) return;
+    const efficacyData = validateEfficacyData(safeJsonParse(activeSubTrial.EfficacyDataJSON, []));
+    if (efficacyData.length < 2) {
+      window.dispatchEvent(new CustomEvent('app:toast', { detail: { msg: 'Need at least 2 observations to generate summary', type: 'warning' } }));
+      return;
+    }
+
+    window.dispatchEvent(new CustomEvent('app:toast', { detail: { msg: 'Generating AI trial summary...', type: 'info' } }));
+
+    const sorted = [...efficacyData].sort((a, b) => (a.daa ?? 0) - (b.daa ?? 0));
+    const baseline = sorted[0];
+    const latest = sorted[sorted.length - 1];
+    const baseCover = parseFloat(baseline?.weedCover ?? 100) || 100;
+    const finalCover = parseFloat(latest?.weedCover ?? 0) || 0;
+    const wce = baseCover > 0 ? Math.max(0, Math.min(100, (1 - finalCover / baseCover) * 100)) : 0;
+
+    const allSpecies = new Set();
+    const speciesControlStatus = {};
+    sorted.forEach(obs => {
+      (obs.weedDetails || []).forEach(wd => {
+        allSpecies.add(wd.species);
+        if (!speciesControlStatus[wd.species]) {
+          speciesControlStatus[wd.species] = { initial: wd.cover, final: wd.cover, status: wd.status };
+        } else {
+          speciesControlStatus[wd.species].final = wd.cover;
+          speciesControlStatus[wd.species].status = wd.status;
+        }
+      });
+    });
+
+    const daysTracked = latest.daa - baseline.daa;
+    const controlRating = wce >= 85 ? 'Excellent' : wce >= 70 ? 'Good' : wce >= 50 ? 'Fair' : 'Poor';
+
+    let summaryText = `**Weed Control Summary**\n`;
+    summaryText += `Treatment: ${activeSubTrial.FormulationName || 'Unknown'}\n`;
+    summaryText += `Duration: ${daysTracked} days (DAA ${baseline.daa} to ${latest.daa})\n`;
+    summaryText += `Initial Cover: ${baseCover.toFixed(1)}% → Final Cover: ${finalCover.toFixed(1)}%\n`;
+    summaryText += `Weed Control Efficiency (WCE): ${wce.toFixed(1)}% - ${controlRating} Control\n\n`;
+
+    summaryText += `**Species Observed:** ${Array.from(allSpecies).join(', ') || 'None identified'}\n`;
+    summaryText += `**Control Status by Species:**\n`;
+    Object.entries(speciesControlStatus).forEach(([sp, data]) => {
+      const spWCE = data.initial > 0 ? ((1 - data.final / data.initial) * 100).toFixed(0) : 0;
+      summaryText += `- ${sp}: ${data.initial}% → ${data.final}% (WCE: ${spWCE}%, Status: ${data.status || 'Unknown'})\n`;
+    });
+
+    const updated = { ...activeSubTrial, Conclusion: summaryText };
+    updateState({ trials: state.trials.map(t => t.ID === updated.ID ? updated : t) });
+    if (selectedSubTrialId === activeSubTrial.ID) setSelectedSubTrialId(updated.ID);
+
+    try {
+      await updateTrial({ ID: activeSubTrial.ID, Conclusion: summaryText }, getAppState);
+      window.dispatchEvent(new CustomEvent('app:toast', { detail: { msg: 'AI summary generated!', type: 'success' } }));
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const handleQuickPhotoCapture = (dataUrl) => {
+    const targetTrial = quickActionTrialRef.current || activeSubTrial;
+    if (!targetTrial) return;
+    quickActionTrialRef.current = null;
+    setIsCameraOpen(false);
+    openCropperFor(dataUrl, (url) => promptPhotoDate(url, targetTrial));
+  };
+
+  const handleQuickFileUpload = async (e) => {
+    const file = e.target.files?.[0];
+    const targetTrial = quickActionTrialRef.current || activeSubTrial;
+    if (!file || !targetTrial) return;
+    quickActionTrialRef.current = null;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      e.target.value = '';
+      openCropperFor(ev.target.result, (url) => promptPhotoDate(url, targetTrial));
+    };
+    reader.readAsDataURL(file);
+  };
 
   // Initialise Leaflet Map
   useEffect(() => {
@@ -851,278 +1549,588 @@ export default function LargeScaleTrials({ onMenuClick }) {
             {/* Right side: Sub-Trials Folder / Directory & Inspector */}
             <div className="space-y-6">
               {activeSubTrial ? (
-                // Inspector View
-                <div className="bg-white rounded-3xl p-6 shadow-sm border border-slate-100 space-y-5 flex flex-col max-h-[760px] overflow-hidden">
-                  <div className="flex justify-between items-center pb-3 border-b">
-                    <button
-                      onClick={() => setSelectedSubTrialId('')}
-                      className="text-xs text-emerald-700 hover:text-emerald-800 font-bold flex items-center gap-1"
-                    >
-                      <ArrowLeft className="w-3.5 h-3.5" /> Back to Spots
-                    </button>
-
-                    <div className="flex gap-2">
-                      <button
-                        onClick={() => {
-                          setEditingSubTrial(activeSubTrial);
-                          setSubTrialForm({
-                            FormulationName: activeSubTrial.FormulationName || '',
-                            InvestigatorName: activeSubTrial.InvestigatorName || '',
-                            Date: toDatetimeLocal(activeSubTrial.Date),
-                            Location: activeSubTrial.Location || '',
-                            Dosage: activeSubTrial.Dosage || '',
-                            Lat: activeSubTrial.Lat || '',
-                            Lon: activeSubTrial.Lon || '',
-                            WeedSpecies: activeSubTrial.WeedSpecies || '',
-                            Result: activeSubTrial.Result || 'Pending',
-                            Notes: activeSubTrial.Notes || '',
-                            Conclusion: activeSubTrial.Conclusion || '',
-                            IsControl: activeSubTrial.IsControl === true || activeSubTrial.IsControl === 'true',
-                            IsStandardCheck: activeSubTrial.IsStandardCheck === true || activeSubTrial.IsStandardCheck === 'true',
-                            IsCompleted: activeSubTrial.IsCompleted === true || activeSubTrial.IsCompleted === 'true',
-                            Replication: activeSubTrial.Replication || 'R1',
-                            PlotNumber: activeSubTrial.PlotNumber || '',
-                            Temperature: activeSubTrial.Temperature || '',
-                            Humidity: activeSubTrial.Humidity || '',
-                            Windspeed: activeSubTrial.Windspeed || '',
-                            Rain: activeSubTrial.Rain || '',
-                            SoilPH: activeSubTrial.SoilPH || '',
-                            SoilClay: activeSubTrial.SoilClay || '',
-                            SoilSand: activeSubTrial.SoilSand || '',
-                            SoilOC: activeSubTrial.SoilOC || '',
-                            SoilTexture: activeSubTrial.SoilTexture || '',
-                            ApplicationTiming: activeSubTrial.ApplicationTiming || 'POST',
-                            WeedGrowthStage: activeSubTrial.WeedGrowthStage || 'Vegetative',
-                            EfficacyDataJSON: activeSubTrial.EfficacyDataJSON || '[]',
-                            PhotoURLs: activeSubTrial.PhotoURLs || '[]',
-                            WeedPhotosJSON: activeSubTrial.WeedPhotosJSON || '[]',
-                            AISummariesJSON: activeSubTrial.AISummariesJSON || '{}'
-                          });
-                          setIsSubTrialModalOpen(true);
-                        }}
-                        className="p-1.5 hover:bg-slate-100 text-slate-500 rounded-lg transition"
-                        title="Edit Spot"
-                      >
-                        <Edit className="w-4 h-4" />
-                      </button>
-                      <button
-                        onClick={(e) => handleDeleteSubTrial(activeSubTrial.ID, e)}
-                        className="p-1.5 hover:bg-red-50 text-red-600 rounded-lg transition"
-                        title="Delete Spot"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
-                    </div>
-                  </div>
-
-                  <div className="flex-1 overflow-y-auto space-y-4 pr-1">
-                    {/* Identification */}
-                    <div>
-                      <span className="text-[10px] font-bold text-slate-400 block uppercase">SUB-TRIAL PROFILE</span>
-                      <h3 className="text-base font-bold text-slate-800">{activeSubTrial.FormulationName || 'Untreated Check'}</h3>
-                      <p className="text-xs text-slate-500 font-semibold mt-0.5">
-                        Rep: {activeSubTrial.Replication || 'N/A'} | Plot: {activeSubTrial.PlotNumber || 'N/A'}
+                // Tabbed Inspector View (matching standard Trials detail panel)
+                <div className="bg-white rounded-3xl shadow-sm border border-slate-100 flex flex-col h-[760px] overflow-hidden">
+                  {/* Header */}
+                  <div className={`p-4 flex items-start justify-between gap-3 ${activeSubTrial.IsCompleted ? 'bg-emerald-50' : 'bg-blue-50'}`}>
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-1.5 mb-1 flex-wrap">
+                        <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${activeSubTrial.IsCompleted ? 'bg-emerald-200 text-emerald-800' : 'bg-blue-200 text-blue-800'}`}>
+                          {activeSubTrial.IsCompleted ? 'Finalized' : 'Active'}
+                        </span>
+                        {activeSubTrial.IsControl === true || activeSubTrial.IsControl === 'true' ?
+                          <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-purple-200 text-purple-800">Control</span> : null}
+                        <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 border">
+                          {activeSubTrial.Result || 'Unrated'}
+                        </span>
+                      </div>
+                      <h3 className="text-sm font-bold text-slate-800 truncate">{activeSubTrial.FormulationName || 'Untreated Check'}</h3>
+                      <p className="text-[10px] text-slate-500 mt-0.5">
+                        Rep: {activeSubTrial.Replication || 'N/A'} · Plot: {activeSubTrial.PlotNumber || 'N/A'}
                       </p>
                     </div>
 
-                    {/* Metadata summary */}
-                    <div className="grid grid-cols-2 gap-3 bg-slate-50 p-3 rounded-xl border border-slate-100 text-xs">
-                      <div>
-                        <span className="text-[9px] text-slate-400 uppercase block font-semibold">Dosage</span>
-                        <span className="font-bold text-slate-700">{activeSubTrial.Dosage || 'N/A'}</span>
-                      </div>
-                      <div>
-                        <span className="text-[9px] text-slate-400 uppercase block font-semibold">Outcome</span>
-                        <span className="font-bold text-emerald-800">{activeSubTrial.Result || 'Pending'}</span>
-                      </div>
-                      <div>
-                        <span className="text-[9px] text-slate-400 uppercase block font-semibold">Timing</span>
-                        <span className="font-bold text-slate-700">{activeSubTrial.ApplicationTiming || 'N/A'}</span>
-                      </div>
-                      <div>
-                        <span className="text-[9px] text-slate-400 uppercase block font-semibold">Weeds targeted</span>
-                        <span className="font-bold text-slate-700 truncate block">{activeSubTrial.WeedSpecies || 'N/A'}</span>
-                      </div>
+                    <div className="flex gap-1 shrink-0">
+                      <button
+                        onClick={() => setSelectedSubTrialId('')}
+                        className="p-1 text-slate-400 hover:text-slate-600 rounded bg-white/60 border border-slate-200 shadow-sm text-xs font-bold px-2"
+                      >
+                        Back
+                      </button>
                     </div>
+                  </div>
 
-                    {/* Mappin Coordinate */}
-                    <div className="flex items-center gap-1 text-xs text-slate-500">
-                      <MapPin className="w-3.5 h-3.5 text-slate-400" />
-                      <span>{parseFloat(activeSubTrial.Lat).toFixed(6)}, {parseFloat(activeSubTrial.Lon).toFixed(6)}</span>
-                    </div>
-
-                    {/* DAA Observation visits logs */}
-                    <div className="space-y-2.5">
-                      <div className="flex justify-between items-center">
-                        <span className="text-[10px] font-bold text-slate-400 uppercase">DAA Visit logs</span>
+                  {/* Tabs Nav */}
+                  <div className="flex border-b bg-white overflow-x-auto whitespace-nowrap scrollbar-none">
+                    {[['info','Info'],['observations','Obs'],['photos','Photos'],['weather','Weather'],['chart','Chart'],['statistics','Stats'],['qr','QR'],['export','Export']].map(([k, label]) => {
+                      const obsCount = obsData.sorted.length;
+                      const photosCount = safeJsonParse(activeSubTrial.PhotoURLs, []).length;
+                      return (
                         <button
-                          onClick={() => {
-                            setEditingVisitIdx(null);
-                            setVisitForm({ ...emptyVisitForm(), date: new Date().toISOString().split('T')[0] });
-                            setIsVisitModalOpen(true);
-                          }}
-                          className="text-[10px] text-emerald-700 font-bold flex items-center gap-0.5"
+                          key={k}
+                          onClick={() => setDetailTab(k)}
+                          className={`px-3 py-2.5 text-xs font-bold border-b-2 transition
+                            ${detailTab === k ? 'border-emerald-600 text-emerald-700' : 'border-transparent text-slate-500 hover:text-slate-700'}`}
                         >
-                          <Plus className="w-3.5 h-3.5" /> Log DAA Visit
+                          {label}
+                          {k === 'observations' && obsCount > 0 && <span className="ml-1 text-[9px] bg-emerald-100 text-emerald-700 px-1 rounded-full">{obsCount}</span>}
+                          {k === 'photos' && photosCount > 0 && <span className="ml-1 text-[9px] bg-blue-100 text-blue-700 px-1 rounded-full">{photosCount}</span>}
                         </button>
-                      </div>
+                      );
+                    })}
+                  </div>
 
-                      <div className="space-y-2">
-                        {validateEfficacyData(safeJsonParse(activeSubTrial.EfficacyDataJSON, [])).map((visit, vIdx) => (
-                          <div key={vIdx} className="p-3 bg-white border rounded-xl shadow-sm space-y-2">
-                            <div className="flex justify-between items-start">
-                              <div>
-                                <span className="bg-emerald-100 text-emerald-800 font-bold px-1.5 py-0.5 rounded text-[9px]">DAA {visit.daa}</span>
-                                <span className="text-slate-400 text-[10px] ml-2">{visit.date}</span>
+                  {/* Tab Content Panel */}
+                  <div className="flex-1 overflow-y-auto p-4 space-y-4">
+                    
+                    {/* INFO TAB */}
+                    {detailTab === 'info' && (
+                      <div className="space-y-4">
+                        <div className="grid grid-cols-2 gap-2.5">
+                          {[
+                            ['Investigator', activeSubTrial.InvestigatorName, Info],
+                            ['Dosage', activeSubTrial.Dosage, SlidersHorizontal],
+                            ['Weeds targeted', activeSubTrial.WeedSpecies, Leaf],
+                            ['Replication', activeSubTrial.Replication, Hash],
+                            ['Plot #', activeSubTrial.PlotNumber, Hash],
+                            ['App Timing', activeSubTrial.ApplicationTiming, Clock],
+                            ['Growth Stage', activeSubTrial.WeedGrowthStage, Leaf],
+                            ['Soil Texture', activeSubTrial.SoilTexture, Compass]
+                          ].map(([label, val, Icon]) => (
+                            <div key={label} className="bg-slate-50 rounded-xl p-2.5 border border-slate-100 text-xs">
+                              <div className="flex items-center gap-1.5 mb-1">
+                                <Icon className="w-3.5 h-3.5 text-slate-400" />
+                                <span className="text-[9px] font-bold text-slate-400 uppercase">{label}</span>
                               </div>
-
-                              <div className="flex gap-1.5">
-                                <button
-                                  onClick={() => {
-                                    setEditingVisitIdx(vIdx);
-                                    setVisitForm({
-                                      daa: visit.daa || '',
-                                      date: visit.date || '',
-                                      weedCover: visit.weedCover || '',
-                                      notes: visit.notes || '',
-                                      weatherTemp: visit.weatherTemp || '',
-                                      weatherHumidity: visit.weatherHumidity || '',
-                                      weatherWind: visit.weatherWind || '',
-                                      weatherRain: visit.weatherRain || '',
-                                      photoUrl: visit.photoUrl || '',
-                                      weedDetails: visit.weedDetails || []
-                                    });
-                                    setIsVisitModalOpen(true);
-                                  }}
-                                  className="text-[10px] text-slate-500 hover:text-emerald-700 font-semibold"
-                                >
-                                  Edit
-                                </button>
-                                <button
-                                  onClick={() => handleDeleteVisit(vIdx)}
-                                  className="text-[10px] text-red-500 hover:text-red-700 font-semibold"
-                                >
-                                  Delete
-                                </button>
-                              </div>
+                              <p className="font-bold text-slate-800">{val || '—'}</p>
                             </div>
+                          ))}
+                        </div>
 
-                            <div className="flex justify-between items-center text-xs">
-                              <span className="text-slate-500">Weed Cover: <b>{visit.weedCover}%</b></span>
-                              {visit.photoUrl && (
-                                <a href={visit.photoUrl} target="_blank" rel="noopener noreferrer" className="w-10 h-7 rounded overflow-hidden border">
-                                  <img src={visit.photoUrl} alt="" className="w-full h-full object-cover" />
-                                </a>
-                              )}
-                            </div>
-
-                            {visit.weedDetails && visit.weedDetails.length > 0 && (
-                              <div className="text-[11px] text-slate-500 bg-slate-50 p-2 rounded-lg space-y-0.5">
-                                {visit.weedDetails.map((w, idx) => (
-                                  <div key={idx} className="flex justify-between">
-                                    <span className="font-medium">{w.species}</span>
-                                    <span>{w.cover}% ({w.status || 'Active'})</span>
-                                  </div>
-                                ))}
-                              </div>
-                            )}
+                        {activeSubTrial.Notes && (
+                          <div className="bg-slate-50 rounded-xl p-3 border text-xs">
+                            <span className="text-[9px] font-bold text-slate-400 uppercase block mb-1">Notes</span>
+                            <p className="text-slate-600 whitespace-pre-wrap">{activeSubTrial.Notes}</p>
                           </div>
-                        ))}
-                      </div>
-                    </div>
+                        )}
 
-                    {/* Export Section */}
-                    <div className="pt-4 border-t space-y-2.5">
-                      <span className="text-[10px] font-bold text-slate-400 uppercase block">Export Sub-Trial Report</span>
-                      <div className="grid grid-cols-2 gap-2">
-                        <button
-                          onClick={() => generateComprehensivePdf(activeSubTrial, { formulations: state.formulations })}
-                          className="px-2 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-[10px] font-bold transition flex items-center justify-center gap-1"
-                        >
-                          <FileText className="w-3.5 h-3.5 text-emerald-600" /> PDF Report
-                        </button>
-                        <button
-                          onClick={() => generateScientificReport(activeSubTrial, { formulations: state.formulations })}
-                          className="px-2 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-[10px] font-bold transition flex items-center justify-center gap-1"
-                        >
-                          <FileText className="w-3.5 h-3.5 text-sky-600" /> Scientific PDF
-                        </button>
-                        <button
-                          onClick={() => generatePpt(activeSubTrial)}
-                          className="px-2 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-[10px] font-bold transition flex items-center justify-center gap-1"
-                        >
-                          <BarChart2 className="w-3.5 h-3.5 text-amber-600" /> PPT Slide
-                        </button>
-                        <button
-                          onClick={() => exportToCSV(activeSubTrial)}
-                          className="px-2 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-[10px] font-bold transition flex items-center justify-center gap-1"
-                        >
-                          <TrendingUp className="w-3.5 h-3.5 text-purple-600" /> CSV sheet
-                        </button>
-                        <button
-                          onClick={() => exportHtmlReport(activeSubTrial)}
-                          className="px-2 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-[10px] font-bold transition flex items-center justify-center gap-1"
-                        >
-                          <Leaf className="w-3.5 h-3.5 text-teal-600" /> HTML view
-                        </button>
-                        <button
-                          onClick={() => exportTrialDocx(activeSubTrial, { formulations: state.formulations })}
-                          className="px-2 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-[10px] font-bold transition flex items-center justify-center gap-1"
-                        >
-                          <BookOpen className="w-3.5 h-3.5 text-indigo-600" /> Word Doc
-                        </button>
+                        {activeSubTrial.Conclusion && (
+                          <div className="bg-emerald-50/50 rounded-xl p-3 border border-emerald-100 text-xs">
+                            <span className="text-[9px] font-bold text-emerald-600 uppercase block mb-1">Conclusion</span>
+                            <p className="text-slate-700 whitespace-pre-wrap">{activeSubTrial.Conclusion}</p>
+                          </div>
+                        )}
+
+                        {/* Soil Data */}
+                        {(activeSubTrial.SoilPH || activeSubTrial.SoilClay || activeSubTrial.SoilSand) && (
+                          <div className="bg-amber-50/30 rounded-xl p-3 border border-amber-100/50 text-xs">
+                            <span className="text-[9px] font-bold text-amber-700 uppercase block mb-2">Soil Characteristics</span>
+                            <div className="grid grid-cols-3 gap-2">
+                              {activeSubTrial.SoilPH && <div><span className="text-amber-800 font-medium">pH:</span> {activeSubTrial.SoilPH}</div>}
+                              {activeSubTrial.SoilClay && <div><span className="text-amber-800 font-medium">Clay:</span> {activeSubTrial.SoilClay}%</div>}
+                              {activeSubTrial.SoilSand && <div><span className="text-amber-800 font-medium">Sand:</span> {activeSubTrial.SoilSand}%</div>}
+                              {activeSubTrial.SoilOC && <div><span className="text-amber-800 font-medium">OC:</span> {activeSubTrial.SoilOC}%</div>}
+                            </div>
+                          </div>
+                        )}
+
+                        <div className="flex gap-2 flex-wrap pt-2 border-t">
+                          {!activeSubTrial.IsCompleted ? (
+                            <button
+                              onClick={() => onMarkComplete(activeSubTrial)}
+                              className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold transition flex items-center gap-1 shadow-sm"
+                            >
+                              <CheckCircle className="w-3.5 h-3.5" /> Finalize Spot
+                            </button>
+                          ) : (
+                            <button
+                              onClick={async () => {
+                                const updated = { ...activeSubTrial, IsCompleted: false };
+                                try {
+                                  await updateTrial(updated, getAppState);
+                                  updateState({ trials: state.trials.map(t => t.ID === activeSubTrial.ID ? updated : t) });
+                                } catch {}
+                              }}
+                              className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold transition flex items-center gap-1 shadow-sm"
+                            >
+                              <RefreshCw className="w-3.5 h-3.5" /> Reactivate Spot
+                            </button>
+                          )}
+                          <button
+                            onClick={() => onDuplicate(activeSubTrial)}
+                            className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition"
+                          >
+                            Duplicate
+                          </button>
+                          <button
+                            onClick={() => {
+                              setEditingSubTrial(activeSubTrial);
+                              setSubTrialForm({ ...activeSubTrial });
+                              setIsSubTrialModalOpen(true);
+                            }}
+                            className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition flex items-center gap-1"
+                          >
+                            <Edit className="w-3.5 h-3.5" /> Edit Info
+                          </button>
+                        </div>
                       </div>
-                    </div>
+                    )}
+
+                    {/* OBSERVATIONS TAB */}
+                    {detailTab === 'observations' && (
+                      <div className="space-y-4">
+                        <div className="flex justify-between items-center">
+                          <span className="text-[10px] font-bold text-slate-400 uppercase">DAA Observations Log</span>
+                          <div className="flex gap-1.5">
+                            {obsData.sorted.length >= 2 && (
+                              <button
+                                onClick={generateAISummary}
+                                className="px-2.5 py-1 bg-violet-600 hover:bg-violet-700 text-white font-bold rounded-lg text-[10px] flex items-center gap-1 shadow-sm"
+                              >
+                                <Sparkles className="w-3 h-3" /> AI Summary
+                              </button>
+                            )}
+                            <button
+                              onClick={() => {
+                                setEditingVisitIdx(null);
+                                setVisitForm({ ...emptyVisitForm(), date: new Date().toISOString().split('T')[0] });
+                                setIsVisitModalOpen(true);
+                              }}
+                              className="px-2.5 py-1 bg-emerald-700 hover:bg-emerald-800 text-white font-bold rounded-lg text-[10px] flex items-center gap-0.5"
+                            >
+                              <Plus className="w-3 h-3" /> Log Visit
+                            </button>
+                          </div>
+                        </div>
+
+                        {obsData.sorted.length > 0 ? (
+                          <div className="space-y-3">
+                            {obsData.sorted.map((visit, idx) => {
+                              const isBaseline = visit.daa === obsData.sorted[0]?.daa;
+                              const wce = obsData.baseCover > 0 && !isBaseline ? Math.max(0, Math.min(100, (1 - visit.weedCover / obsData.baseCover) * 100)) : null;
+                              const wceRating = wce === null ? null : wce >= 85 ? 'Excellent' : wce >= 70 ? 'Good' : wce >= 50 ? 'Fair' : 'Poor';
+                              const wceCls = wce === null ? '' : wce >= 85 ? 'text-emerald-700 bg-emerald-50' : wce >= 70 ? 'text-blue-700 bg-blue-50' : wce >= 50 ? 'text-amber-700 bg-amber-50' : 'text-red-700 bg-red-50';
+                              const risks = getClimateRisks(visit.weatherTemp, visit.weatherWind, visit.weatherRain);
+
+                              return (
+                                <div key={idx} className="bg-white border rounded-2xl p-3 shadow-sm space-y-2 text-xs">
+                                  <div className="flex justify-between items-start">
+                                    <div className="flex items-center gap-1.5 flex-wrap">
+                                      <span className="bg-slate-700 text-white font-bold px-1.5 py-0.5 rounded text-[9px]">DAA {visit.daa}</span>
+                                      <span className="text-[10px] text-slate-400">{visit.date}</span>
+                                      {wceRating && <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded-full ${wceCls}`}>{wceRating}</span>}
+                                    </div>
+                                    <div className="flex gap-1">
+                                      <button
+                                        onClick={() => {
+                                          setEditingVisitIdx(idx);
+                                          setVisitForm({
+                                            daa: visit.daa || '',
+                                            date: visit.date || '',
+                                            weedCover: visit.weedCover || '',
+                                            notes: visit.notes || '',
+                                            weatherTemp: visit.weatherTemp || '',
+                                            weatherHumidity: visit.weatherHumidity || '',
+                                            weatherWind: visit.weatherWind || '',
+                                            weatherRain: visit.weatherRain || '',
+                                            photoUrl: visit.photoUrl || '',
+                                            weedDetails: visit.weedDetails || []
+                                          });
+                                          setIsVisitModalOpen(true);
+                                        }}
+                                        className="text-[10px] text-slate-500 hover:text-emerald-700 font-bold"
+                                      >
+                                        Edit
+                                      </button>
+                                      <button
+                                        onClick={() => handleDeleteVisit(idx)}
+                                        className="text-[10px] text-red-500 hover:text-red-700 font-bold"
+                                      >
+                                        Delete
+                                      </button>
+                                    </div>
+                                  </div>
+
+                                  <div className="grid grid-cols-2 gap-2 bg-slate-50 p-2 rounded-xl border border-slate-100">
+                                    <div>
+                                      <span className="text-[9px] text-slate-400 block font-semibold">Weed Cover</span>
+                                      <span className="font-bold text-slate-700">{visit.weedCover}%</span>
+                                    </div>
+                                    <div>
+                                      <span className="text-[9px] text-slate-400 block font-semibold">WCE %</span>
+                                      <span className="font-bold text-slate-700">{wce !== null ? `${wce.toFixed(1)}%` : isBaseline ? 'Baseline' : '—'}</span>
+                                    </div>
+                                  </div>
+
+                                  {visit.photoUrl && (
+                                    <div className="relative rounded-lg overflow-hidden border bg-black h-24">
+                                      <img src={visit.photoUrl} alt="" className="w-full h-full object-cover" />
+                                    </div>
+                                  )}
+
+                                  {visit.weedDetails && visit.weedDetails.length > 0 && (
+                                    <div className="text-[10px] text-slate-500 bg-slate-50 p-2 rounded-lg space-y-0.5 border">
+                                      {visit.weedDetails.map((w, wIdx) => (
+                                        <div key={wIdx} className="flex justify-between">
+                                          <span className="font-medium">{w.species}</span>
+                                          <span>{w.cover}% ({w.status || 'Active'})</span>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  )}
+
+                                  {risks.length > 0 && (
+                                    <div className="space-y-1">
+                                      {risks.map((risk, ri) => (
+                                        <div key={ri} className="text-[9px] px-1.5 py-0.5 rounded font-semibold bg-red-50 text-red-700">
+                                          ⚠️ {risk.msg}
+                                        </div>
+                                      ))}
+                                    </div>
+                                  )}
+                                </div>
+                              );
+                            })}
+                          </div>
+                        ) : (
+                          <div className="text-center py-8 text-slate-400 italic">No observation visits logged yet.</div>
+                        )}
+                      </div>
+                    )}
+
+                    {/* PHOTOS TAB */}
+                    {detailTab === 'photos' && (
+                      <div className="space-y-4">
+                        <div className="flex justify-between items-center">
+                          <span className="text-[10px] font-bold text-slate-400 uppercase">Field Spot Photos</span>
+                          <div className="flex gap-2">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                quickActionTrialRef.current = activeSubTrial;
+                                setCameraMode('general');
+                                setIsCameraOpen(true);
+                              }}
+                              className="px-2 py-1 border rounded-lg text-[10px] font-bold text-slate-700 hover:bg-slate-50 flex items-center gap-1"
+                            >
+                              <Camera className="w-3.5 h-3.5 text-emerald-600" /> Camera
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                quickActionTrialRef.current = activeSubTrial;
+                                fileInputRef.current?.click();
+                              }}
+                              className="px-2 py-1 border rounded-lg text-[10px] font-bold text-slate-700 hover:bg-slate-50 flex items-center gap-1"
+                            >
+                              <Image className="w-3.5 h-3.5 text-emerald-600" /> Choose File
+                            </button>
+                          </div>
+                        </div>
+
+                        {safeJsonParse(activeSubTrial.PhotoURLs, []).length > 0 ? (
+                          <div className="grid grid-cols-2 gap-3">
+                            {safeJsonParse(activeSubTrial.PhotoURLs, []).map((photo, pIdx) => {
+                              const photoSrc = photo.url || photo.fileData || photo;
+                              return (
+                                <div key={pIdx} className="border rounded-2xl overflow-hidden shadow-sm bg-white flex flex-col">
+                                  <div className="relative h-28 bg-black">
+                                    <img src={photoSrc} alt="" className="w-full h-full object-cover" />
+                                    <button
+                                      onClick={() => handleDeletePhoto(pIdx)}
+                                      className="absolute top-1.5 right-1.5 bg-black/60 text-white rounded-full p-1 hover:bg-red-600 transition"
+                                    >
+                                      <X className="w-3 h-3" />
+                                    </button>
+                                  </div>
+                                  <div className="p-2 space-y-1.5 text-[10px]">
+                                    <p className="font-semibold text-slate-700">{photo.label || `Photo ${pIdx + 1}`}</p>
+                                    <p className="text-slate-400">{photo.date}</p>
+                                    <div className="flex gap-1 pt-1.5 border-t">
+                                      <button
+                                        onClick={() => handleCropExistingPhoto(pIdx, photoSrc)}
+                                        className="flex-1 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded font-bold text-center"
+                                      >
+                                        Crop
+                                      </button>
+                                      <button
+                                        onClick={() => handleAnalyzeSinglePhoto(photoSrc, photo.date)}
+                                        disabled={aiGenRunning}
+                                        className="flex-1 py-1 bg-violet-600 hover:bg-violet-700 text-white rounded font-bold text-center"
+                                      >
+                                        AI Scan
+                                      </button>
+                                    </div>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        ) : (
+                          <div className="text-center py-8 text-slate-400 italic">No photos added yet. Snap or upload to perform AI Weed Identification.</div>
+                        )}
+                      </div>
+                    )}
+
+                    {/* WEATHER TAB */}
+                    {detailTab === 'weather' && (
+                      <div className="space-y-4">
+                        <span className="text-[10px] font-bold text-slate-400 uppercase block">Application Meteorological Parameters</span>
+                        <div className="grid grid-cols-2 gap-3 text-xs bg-slate-50 p-4 border rounded-2xl">
+                          <div>
+                            <span className="text-[9px] text-slate-400 block font-semibold">Temperature</span>
+                            <span className="font-bold text-slate-700">{activeSubTrial.Temperature || 'N/A'} °C</span>
+                          </div>
+                          <div>
+                            <span className="text-[9px] text-slate-400 block font-semibold">Relative Humidity</span>
+                            <span className="font-bold text-slate-700">{activeSubTrial.Humidity || 'N/A'} %</span>
+                          </div>
+                          <div>
+                            <span className="text-[9px] text-slate-400 block font-semibold">Windspeed</span>
+                            <span className="font-bold text-slate-700">{activeSubTrial.Windspeed || 'N/A'} km/h</span>
+                          </div>
+                          <div>
+                            <span className="text-[9px] text-slate-400 block font-semibold">Precipitation</span>
+                            <span className="font-bold text-slate-700">{activeSubTrial.Rain || 'N/A'} mm</span>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* CHART TAB */}
+                    {detailTab === 'chart' && (
+                      <div className="space-y-4">
+                        <span className="text-[10px] font-bold text-slate-400 uppercase block">Efficacy Curves</span>
+                        {obsData.sorted.length > 0 ? (
+                          <div className="h-56 bg-slate-50/50 p-4 border rounded-2xl flex flex-col justify-between">
+                            <div className="flex-1 relative">
+                              <svg className="w-full h-full" viewBox="0 0 500 200" preserveAspectRatio="none">
+                                {[0, 20, 40, 60, 80, 100].map(yVal => {
+                                  const y = 200 - (yVal * 2);
+                                  return <line key={yVal} x1="0" y1={y} x2="500" y2={y} stroke="#e2e8f0" strokeWidth="1" />;
+                                })}
+                                <polyline
+                                  fill="none"
+                                  stroke="#10b981"
+                                  strokeWidth="3"
+                                  points={obsData.sorted.map((o, idx) => {
+                                    const x = (idx / (obsData.sorted.length - 1 || 1)) * 500;
+                                    const y = 200 - (o.weedCover * 2);
+                                    return `${x},${y}`;
+                                  }).join(' ')}
+                                />
+                              </svg>
+                            </div>
+                            <div className="flex justify-between pt-2 border-t text-[9px] font-bold text-slate-400">
+                              {obsData.sorted.map(o => (
+                                <span key={o.daa}>DAA {o.daa} ({o.weedCover}%)</span>
+                              ))}
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="text-center py-8 text-slate-400 italic">No efficacy visits logged yet.</div>
+                        )}
+                      </div>
+                    )}
+
+                    {/* STATISTICS TAB */}
+                    {detailTab === 'statistics' && (
+                      <div className="space-y-4">
+                        <span className="text-[10px] font-bold text-slate-400 uppercase block">ANOVA Statistics & WCE Diagnostics</span>
+                        {statsData.hasStats ? (
+                          <div className="space-y-3 text-xs">
+                            <div className="bg-emerald-50/50 border border-emerald-100 rounded-xl p-3 text-emerald-800">
+                              <p className="font-bold">Mean WCE Efficacy: {statsData.renderMeanWce.toFixed(1)}%</p>
+                              <p className="text-[10px] mt-0.5">Coefficient of Variation (CV): {statsData.stats.anovaResults?.diagnostics?.cv || 'N/A'}%</p>
+                            </div>
+                            <div className="border rounded-xl overflow-hidden">
+                              <table className="w-full text-[10px]">
+                                <thead className="bg-slate-50 text-slate-500">
+                                  <tr>
+                                    <th className="px-3 py-1.5 text-left">Source</th>
+                                    <th className="px-3 py-1.5 text-center">DF</th>
+                                    <th className="px-3 py-1.5 text-right">MS</th>
+                                  </tr>
+                                </thead>
+                                <tbody className="divide-y text-slate-700">
+                                  <tr>
+                                    <td className="px-3 py-1.5 font-medium">Treatment</td>
+                                    <td className="px-3 py-1.5 text-center">{statsData.stats.anovaResults?.anovaTable?.treatment?.df || 0}</td>
+                                    <td className="px-3 py-1.5 text-right">{statsData.stats.anovaResults?.anovaTable?.treatment?.ms || 0}</td>
+                                  </tr>
+                                </tbody>
+                              </table>
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="bg-slate-50 p-4 border rounded-2xl text-center space-y-2">
+                            <p className="text-slate-400 text-xs">Run WCE calculations on the sub-trial observations.</p>
+                            <button
+                              onClick={async () => {
+                                if (obsData.sorted.length < 2) {
+                                  window.dispatchEvent(new CustomEvent('app:toast', { detail: { msg: 'Need at least 2 observations to calculate statistics', type: 'error' } }));
+                                  return;
+                                }
+                                const wceRows = obsData.sorted.map(obs => {
+                                  const cover = parseFloat(obs.weedCover ?? 0) || 0;
+                                  const wce = obs.daa === obsData.sorted[0].daa ? null : (obsData.baseCover > 0 ? Math.max(0, Math.min(100, (1 - cover / obsData.baseCover) * 100)) : 0);
+                                  return { daa: obs.daa, wce };
+                                });
+                                const wces = wceRows.map(r => r.wce).filter(v => v !== null);
+                                const meanWce = wces.length ? wces.reduce((s, v) => s + v, 0) / wces.length : 0;
+                                const df = wces.length - 1;
+                                const result = {
+                                  wce: wceRows,
+                                  anovaResults: { anovaTable: { treatment: { source: 'Treatment', df, ms: 0 } }, diagnostics: { cv: 0 } },
+                                  calculatedAt: new Date().toISOString()
+                                };
+                                const updated = { ...activeSubTrial, StatisticsJSON: JSON.stringify(result) };
+                                try {
+                                  await updateTrial(updated, getAppState);
+                                  updateState({ trials: state.trials.map(t => t.ID === activeSubTrial.ID ? updated : t) });
+                                  window.dispatchEvent(new CustomEvent('app:toast', { detail: { msg: 'Calculated successfully!', type: 'success' } }));
+                                } catch {}
+                              }}
+                              className="px-3 py-1.5 bg-emerald-700 hover:bg-emerald-800 text-white rounded-lg text-xs font-bold transition"
+                            >
+                              Calculate Statistics
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {/* QR CODE TAB */}
+                    {detailTab === 'qr' && (
+                      <div className="space-y-4 flex flex-col items-center justify-center p-4">
+                        <span className="text-[10px] font-bold text-slate-400 uppercase block text-center">Printable QR Trial Spot Code</span>
+                        <div className="p-3 border-2 border-emerald-600 rounded-2xl bg-white shadow-md">
+                          <canvas ref={qrCanvasRef} className="w-44 h-44 block" />
+                        </div>
+                        <p className="text-[10px] text-slate-400 text-center max-w-[200px]">
+                          Scan code with any mobile device to view or log live data for this spot in the field.
+                        </p>
+                      </div>
+                    )}
+
+                    {/* EXPORT TAB */}
+                    {detailTab === 'export' && (
+                      <div className="space-y-4">
+                        <span className="text-[10px] font-bold text-slate-400 uppercase block">Export Sub-Trial Data</span>
+                        <div className="grid grid-cols-2 gap-2.5">
+                          <button
+                            onClick={() => generateComprehensivePdf(activeSubTrial, { formulations: state.formulations })}
+                            className="px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition flex items-center gap-2"
+                          >
+                            <FileText className="w-4 h-4 text-emerald-600" /> PDF Report
+                          </button>
+                          <button
+                            onClick={() => generateScientificReport(activeSubTrial, { formulations: state.formulations })}
+                            className="px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition flex items-center gap-2"
+                          >
+                            <FileText className="w-4 h-4 text-sky-600" /> Scientific PDF
+                          </button>
+                          <button
+                            onClick={() => generatePpt(activeSubTrial)}
+                            className="px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition flex items-center gap-2"
+                          >
+                            <BarChart2 className="w-4 h-4 text-amber-600" /> PowerPoint
+                          </button>
+                          <button
+                            onClick={() => exportToCSV(activeSubTrial)}
+                            className="px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition flex items-center gap-2"
+                          >
+                            <TrendingUp className="w-4 h-4 text-purple-600" /> CSV Dataset
+                          </button>
+                          <button
+                            onClick={() => exportHtmlReport(activeSubTrial)}
+                            className="px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition flex items-center gap-2"
+                          >
+                            <Leaf className="w-4 h-4 text-teal-600" /> HTML view
+                          </button>
+                          <button
+                            onClick={() => exportTrialDocx(activeSubTrial, { formulations: state.formulations })}
+                            className="px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition flex items-center gap-2"
+                          >
+                            <BookOpen className="w-4 h-4 text-indigo-600" /> Word Document
+                          </button>
+                        </div>
+                      </div>
+                    )}
+
                   </div>
                 </div>
               ) : (
-                // Folder List View
-                <div className="bg-white rounded-3xl p-6 shadow-sm border border-slate-100 flex flex-col h-[560px]">
-                  <div className="flex justify-between items-center mb-4">
-                    <h3 className="font-bold text-slate-800 text-sm flex items-center gap-2">
-                      <Layers3 className="w-4 h-4 text-emerald-600" /> Sub-Trial Monitoring Spots
-                    </h3>
+                // Folder List View - Rendering Sub-Trials exactly like standard trial cards
+                <div className="bg-white rounded-3xl p-6 shadow-sm border border-slate-100 flex flex-col min-h-[560px]">
+                  <div className="flex justify-between items-center mb-4 border-b pb-3">
+                    <div>
+                      <h3 className="font-bold text-slate-800 text-sm flex items-center gap-2">
+                        <Layers3 className="w-4 h-4 text-emerald-600" /> Sub-Trial Monitoring Spots
+                      </h3>
+                      <p className="text-[10px] text-slate-400">Standard trial cards managed inside this Master project workspace.</p>
+                    </div>
                     <span className="text-[10px] text-slate-400 font-bold bg-slate-100 px-2 py-0.5 rounded">
                       {subTrials.length} Spots Tracked
                     </span>
                   </div>
 
-                  <div className="flex-1 overflow-y-auto space-y-2.5 pr-1">
-                    {subTrials.map(st => {
-                      const eff = validateEfficacyData(safeJsonParse(st.EfficacyDataJSON, []));
-                      const lastVisitCover = eff.length > 0 ? eff[eff.length - 1].weedCover : 0;
-                      return (
-                        <div
-                          key={st.ID}
-                          onClick={() => setSelectedSubTrialId(st.ID)}
-                          className="p-3 rounded-xl border border-slate-100 hover:border-emerald-300 transition cursor-pointer flex justify-between items-center bg-slate-50/20"
-                        >
-                          <div className="space-y-1.5 flex-1 min-w-0 pr-3">
-                            <div className="flex items-center gap-2">
-                              <span className="bg-emerald-100 text-emerald-800 font-bold px-1.5 py-0.5 rounded text-[9px] uppercase tracking-wider">
-                                {st.Replication}
-                              </span>
-                              <span className="font-bold text-slate-800 text-xs truncate max-w-[120px]">{st.FormulationName || 'Untreated Check'}</span>
-                              {eff.length > 0 && (
-                                <span className="text-slate-400 text-[10px]">DAA {eff[eff.length - 1].daa}</span>
-                              )}
-                            </div>
-                            <div className="text-[10px] text-slate-500 font-semibold truncate flex items-center gap-1">
-                              <MapPin className="w-3 h-3 text-slate-400" /> {st.Location || 'No coord'}
-                            </div>
-                            <div className="flex flex-wrap gap-2 text-[9px] font-bold text-slate-400">
-                              <span>Weed cover: {lastVisitCover}%</span>
-                              <span>•</span>
-                              <span>Result: {st.Result}</span>
-                            </div>
-                          </div>
-                          <ChevronRight className="w-4 h-4 text-slate-400" />
-                        </div>
-                      );
-                    })}
-
-                    {subTrials.length === 0 && (
-                      <div className="h-full flex flex-col items-center justify-center text-center text-slate-400 italic py-12">
+                  <div className="flex-1 overflow-y-auto space-y-4 pr-1 max-h-[600px]">
+                    {subTrials.length > 0 ? (
+                      <div className="grid grid-cols-1 gap-4">
+                        {subTrials.map(st => (
+                          <TrialCard
+                            key={st.ID}
+                            trial={st}
+                            project={activeProject}
+                            isSelected={selectedForBulk.has(st.ID)}
+                            isMenuOpen={openCardMenu === st.ID}
+                            onToggleBulk={toggleBulk}
+                            onToggleMenu={toggleMenu}
+                            onViewDetails={onViewDetails}
+                            onEdit={onEdit}
+                            onDuplicate={onDuplicate}
+                            onMoveToProject={onMoveToProject}
+                            onExportPdf={(trial) => generateComprehensivePdf(trial, { formulations: state.formulations })}
+                            onExportSciPdf={(trial) => generateScientificReport(trial, { formulations: state.formulations })}
+                            onExportPpt={(trial) => generatePpt(trial)}
+                            onExportHtml={(trial) => exportHtmlReport(trial)}
+                            onExportTxt={() => {}}
+                            onExportCsv={(trial) => exportToCSV(trial)}
+                            onExportJson={() => {}}
+                            onShare={() => {}}
+                            onAiGenerate={(trial) => generateAISummary(trial)}
+                            onDelete={(id, e) => handleDeleteSubTrial(id, e)}
+                            onActivateToggle={onActivateToggle}
+                            onQuickRate={onQuickRate}
+                            onQuickPhoto={onQuickPhoto}
+                            onQuickGalleryUpload={onQuickGalleryUpload}
+                            onMarkComplete={onMarkComplete}
+                          />
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="h-full flex flex-col items-center justify-center text-center text-slate-400 italic py-16">
                         <Calendar className="w-8 h-8 text-slate-200 mb-2" />
                         No spots created yet. Click "+ Add Sub-Trial / Spot" to begin tracking.
                       </div>
@@ -1700,13 +2708,96 @@ export default function LargeScaleTrials({ onMenuClick }) {
         </form>
       </Modal>
 
+      {/* Hidden file input for quick action gallery uploads */}
+      <input
+        type="file"
+        ref={fileInputRef}
+        accept="image/*"
+        onChange={handleQuickFileUpload}
+        className="hidden"
+      />
+
       {/* Camera Modal */}
       {isCameraOpen && (
         <CameraCapture
           isOpen={isCameraOpen}
           onClose={() => setIsCameraOpen(false)}
-          onCapture={handleCapturePhoto}
+          onCapture={handleQuickPhotoCapture}
         />
+      )}
+
+      {/* Cropper Modal */}
+      {cropperOpen && (
+        <CropperModal
+          isOpen={cropperOpen}
+          imageSrc={cropSource}
+          onClose={() => { setCropperOpen(false); setCropSource(null); }}
+          onCropComplete={handleCropComplete}
+        />
+      )}
+
+      {/* Pending Photo Date Modal */}
+      {pendingPhotoAnalysis && (
+        <Modal isOpen={!!pendingPhotoAnalysis} onClose={() => setPendingPhotoAnalysis(null)} title="Photo Capture Date">
+          <div className="space-y-4 font-sans text-xs">
+            <div>
+              <label className="block text-slate-600 font-bold mb-1">Observation Date & Time</label>
+              <input
+                type="datetime-local"
+                value={pendingPhotoAnalysis.date}
+                onChange={e => setPendingPhotoAnalysis(prev => ({ ...prev, date: e.target.value }))}
+                className="w-full px-3 py-2 border rounded-lg focus:outline-none"
+              />
+            </div>
+            <button
+              onClick={() => saveAndAnalyzePhoto(pendingPhotoAnalysis.dataUrl, pendingPhotoAnalysis.date, pendingPhotoAnalysis.targetTrial)}
+              className="w-full py-2 bg-emerald-700 hover:bg-emerald-800 text-white font-bold rounded-lg transition"
+            >
+              Analyze Photo & Save Visit
+            </button>
+          </div>
+        </Modal>
+      )}
+
+      {/* Duplicate Formulation Modal */}
+      {duplicateModal && (
+        <Modal isOpen={!!duplicateModal} onClose={() => setDuplicateModal(null)} title="Duplicate Sub-Trial Spot">
+          <div className="space-y-4 font-sans text-xs">
+            <div>
+              <label className="block text-slate-600 font-bold mb-1">Select Formulation for New Trial Spot *</label>
+              <select
+                value={duplicateFormulation}
+                onChange={e => setDuplicateFormulation(e.target.value)}
+                className="w-full px-3 py-2 border rounded-lg bg-white"
+              >
+                <option value="">-- Choose Formulation --</option>
+                {state.formulations?.map(f => <option key={f.ID} value={f.Name}>{f.Name}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="block text-slate-600 font-bold mb-1">Date</label>
+              <input
+                type="datetime-local"
+                value={duplicateDate}
+                onChange={e => setDuplicateDate(e.target.value)}
+                className="w-full px-3 py-2 border rounded-lg"
+              />
+            </div>
+            <div>
+              <label className="block text-slate-600 font-bold mb-1">Dosage</label>
+              <input
+                type="text"
+                value={duplicateDosage}
+                onChange={e => setDuplicateDosage(e.target.value)}
+                className="w-full px-3 py-2 border rounded-lg"
+              />
+            </div>
+            <div className="flex justify-end gap-2">
+              <button type="button" onClick={() => setDuplicateModal(null)} className="px-4 py-2 border rounded-lg">Cancel</button>
+              <button type="button" onClick={handleDuplicateConfirm} className="px-4 py-2 bg-emerald-700 text-white rounded-lg">Duplicate</button>
+            </div>
+          </div>
+        </Modal>
       )}
     </div>
   );
