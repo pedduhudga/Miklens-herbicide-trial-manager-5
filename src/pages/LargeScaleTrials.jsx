@@ -1421,7 +1421,15 @@ export default function LargeScaleTrials({ onMenuClick }) {
               <button
                 onClick={() => {
                   setEditingSubTrial(null);
-                  setSubTrialForm({ ...emptySubTrialForm(), InvestigatorName: state.auth?.user?.Name || '' });
+                  const matchedForm = state.formulations?.find(f =>
+                    f.Name.toLowerCase() === activeProject?.Name?.toLowerCase() ||
+                    activeProject?.Name?.toLowerCase().includes(f.Name.toLowerCase())
+                  );
+                  setSubTrialForm({
+                    ...emptySubTrialForm(),
+                    FormulationName: matchedForm ? matchedForm.Name : '',
+                    InvestigatorName: state.auth?.user?.Name || ''
+                  });
                   setIsSubTrialModalOpen(true);
                 }}
                 className="px-4 py-2 bg-emerald-700 hover:bg-emerald-800 text-white rounded-xl text-xs font-bold transition flex items-center gap-1.5 shadow-sm"
@@ -2230,7 +2238,7 @@ export default function LargeScaleTrials({ onMenuClick }) {
 
                   <div className="flex-grow overflow-y-auto pr-1">
                     {filteredSubTrials.length > 0 ? (
-                      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
                         {filteredSubTrials.map((st, idx) => {
                           const sortedSubTrialsByDate = [...subTrials].sort((a, b) => new Date(a.CreatedAt || a.Date || 0) - new Date(b.CreatedAt || b.Date || 0));
                           const subIdx = sortedSubTrialsByDate.findIndex(t => t.ID === st.ID);

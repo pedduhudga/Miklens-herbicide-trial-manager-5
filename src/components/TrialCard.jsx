@@ -280,7 +280,19 @@ const TrialCard = memo(function TrialCard({
 
         <div className="space-y-1.5 text-xs text-slate-500">
           <div className="flex items-center gap-1.5"><Calendar className="w-3.5 h-3.5 shrink-0" /><span>{formatDateTime(trial.Date) || '—'}</span></div>
-          <div className="flex items-center gap-1.5"><MapPin className="w-3.5 h-3.5 shrink-0" /><span className="truncate">{trial.Location || '—'}</span></div>
+          {trial.Lat && trial.Lon ? (
+            <div className="flex items-center gap-1.5 font-mono text-slate-500">
+              <MapPin className="w-3.5 h-3.5 shrink-0 text-emerald-600" />
+              <span>{parseFloat(trial.Lat).toFixed(6)}, {parseFloat(trial.Lon).toFixed(6)}</span>
+            </div>
+          ) : (
+            <div className="flex items-center gap-1.5"><MapPin className="w-3.5 h-3.5 shrink-0" /><span className="truncate">{trial.Location || '—'}</span></div>
+          )}
+          {trial.Lat && trial.Lon && trial.Location && (
+            <div className="flex items-center gap-1.5 text-slate-400 pl-5 text-[11px] -mt-0.5">
+              <span className="truncate">{trial.Location}</span>
+            </div>
+          )}
           <div className="flex items-center gap-1.5"><FlaskConical className="w-3.5 h-3.5 shrink-0" /><span className="truncate">{trial.Dosage || '—'}</span></div>
           {trial.WeedSpecies && <div className="flex items-center gap-1.5"><Activity className="w-3.5 h-3.5 shrink-0" /><span className="truncate">{trial.WeedSpecies}</span></div>}
           {controlDays !== null && (
