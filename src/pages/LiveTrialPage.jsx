@@ -179,6 +179,7 @@ export default function LiveTrialPage() {
           setFormulation(null);
         }
       } catch (e) {
+        console.error("LiveTrialPage loading error:", e);
         setError(e.message || "Failed to load trial.");
       } finally {
         setLoading(false);
