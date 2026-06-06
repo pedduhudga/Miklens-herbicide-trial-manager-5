@@ -24,7 +24,7 @@ export default function Modal({ isOpen, onClose, title, children, maxWidth = "ma
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-40 overflow-y-auto flex items-center justify-center p-4 modal-backdrop">
+    <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-[9999] overflow-y-auto flex items-center justify-center p-4 modal-backdrop">
       <div
         className={`bg-white rounded-2xl shadow-2xl w-full ${maxWidth} relative modal-content max-h-[90vh] flex flex-col`}
         ref={modalRef}
