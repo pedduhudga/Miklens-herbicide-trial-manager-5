@@ -1159,3 +1159,471 @@ ${html.replace(/<!DOCTYPE html>[\s\S]*?<\/head>/i, '').replace(/<\/html>/i, '')}
   );
   toast('Word document downloaded!', 'success');
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  MASTER REPORTS
+// ─────────────────────────────────────────────────────────────────────────────
+
+export async function generateMasterComprehensivePdf(project, subTrials, options = {}) {
+  const { withIngredients = true, withWeeds = true, withTimeline = true,
+          showPhotoDates = true, formulations = [], aiSummary = '' } = options;
+  toast('Generating Master PDF…', 'info');
+  const doc = createDoc();
+  const pw = doc.internal.pageSize.getWidth();
+  const ph = doc.internal.pageSize.getHeight();
+
+  pdfHeader(doc, 'Master Field Study Report', project.Name);
+  let y = 50;
+
+  // Metadata block
+  doc.setFontSize(10);
+  const lx = 14, rx = pw / 2 + 10;
+  doc.text(`Crop: ${project.Crop || 'N/A'}`, lx, y);
+  doc.text(`Location: ${project.Location || 'N/A'}`, rx, y);
+  y += 6;
+  doc.text(`Investigator: ${project.Investigator || 'N/A'}`, lx, y);
+  doc.text(`Created: ${project.CreatedAt ? formatDate(project.CreatedAt) : 'N/A'}`, rx, y);
+  y += 6;
+  if (project.TargetWeeds) {
+    doc.setFont(undefined, 'bold'); doc.text('Target Weeds:', lx, y); y += 5;
+    doc.setFont(undefined, 'normal');
+    const tw = doc.splitTextToSize(project.TargetWeeds, pw - 28);
+    doc.text(tw, lx, y); y += tw.length * 5 + 5;
+  }
+
+  y += 4;
+  y = secHeading(doc, '1. Sub-Trials Summary', y, ph);
+
+  // Table showing all sub-trials
+  const subTrialRows = subTrials.map(st => {
+    return [
+      st.FormulationName || 'Untreated Check',
+      st.Dosage || 'N/A',
+      st.Replication || 'R1',
+      st.PlotNumber || 'N/A',
+      st.Location || 'N/A',
+      st.Result || 'Pending'
+    ];
+  });
+
+  autoTable(doc, {
+    startY: y,
+    head: [['Sub-Trial Spot', 'Dosage', 'Rep', 'Plot #', 'Location', 'Efficacy Result']],
+    body: subTrialRows,
+    headStyles: { fillColor: DARK }, theme: 'striped', styles: { fontSize: 8 }
+  });
+  y = (doc.lastAutoTable?.finalY ?? y) + 10;
+
+  // AI Narrative Summary
+  if (aiSummary) {
+    y = secHeading(doc, '2. Master AI Synthesis & Narrative', y, ph);
+    const narrativeLines = aiSummary.split('\n');
+    for (const rawLine of narrativeLines) {
+      const line = rawLine.trim();
+      if (!line) { y += 3; continue; }
+      const wrapped = doc.splitTextToSize(line, pw - 28);
+      if (y + wrapped.length * 5 > ph - 20) { doc.addPage(); y = 20; }
+      doc.setFontSize(9); doc.text(wrapped, 14, y); y += wrapped.length * 5 + 2;
+    }
+    y += 6;
+    doc.setFontSize(10);
+  }
+
+  // Consolidated WCE comparison
+  y = secHeading(doc, '3. Comparative Weed Control Efficacy (WCE%)', y, ph);
+  const wceRows = [];
+  subTrials.forEach(st => {
+    const eff = validateEfficacy(safeJsonParse(st.EfficacyDataJSON, []));
+    const wces = calcWCE(eff);
+    wces.forEach(w => {
+      wceRows.push([
+        st.FormulationName || 'Untreated Check',
+        st.Replication || 'R1',
+        w.species,
+        w.initialCover.toFixed(1) + '%',
+        w.finalCover.toFixed(1) + '%',
+        w.wce.toFixed(1) + '%'
+      ]);
+    });
+  });
+
+  if (wceRows.length) {
+    autoTable(doc, {
+      startY: y,
+      head: [['Sub-Trial / Spot', 'Rep', 'Weed Species', 'Initial Cover', 'Final Cover', 'WCE %']],
+      body: wceRows,
+      headStyles: { fillColor: TEAL }, theme: 'striped', styles: { fontSize: 8 }
+    });
+    y = (doc.lastAutoTable?.finalY ?? y) + 10;
+  } else {
+    doc.setFontSize(9); doc.text('No structured observations available for comparison.', 14, y);
+    y += 10;
+  }
+
+  // Add individual Sub-Trial details sequentially
+  for (let i = 0; i < subTrials.length; i++) {
+    const st = subTrials[i];
+    doc.addPage(); y = 20;
+    y = secHeading(doc, `Sub-Trial: ${st.FormulationName || 'Untreated Check'} (${st.Replication || 'R1'})`, y, ph, 14);
+    
+    // Details
+    doc.setFontSize(9);
+    doc.text(`Location: ${st.Location || 'N/A'}  |  Dosage: ${st.Dosage || 'N/A'}  |  Plot: ${st.PlotNumber || 'N/A'}`, 14, y); y += 6;
+    if (st.Notes) {
+      doc.text(`Notes: ${st.Notes}`, 14, y, { maxWidth: pw - 28 });
+      y += 10;
+    }
+    
+    // Timeline Table
+    const eff = validateEfficacy(safeJsonParse(st.EfficacyDataJSON, []));
+    if (eff.length) {
+      autoTable(doc, {
+        startY: y,
+        head: [['DAA', 'Weed Species', 'Status', 'Notes']],
+        body: timelineRows(eff),
+        headStyles: { fillColor: TEAL }, theme: 'striped', styles: { fontSize: 8 }
+      });
+      y = (doc.lastAutoTable?.finalY ?? y) + 8;
+    }
+    
+    // Photos
+    const photos = safeJsonParse(st.PhotoURLs, []);
+    if (photos.length) {
+      y = await addPhotoGrid(doc, photos, y, ph, 40, showPhotoDates);
+    }
+  }
+
+  pdfAddFooter(doc, `Master Report: ${project.Name}`);
+  doc.save(`Master_Report_${safeName(project.Name)}.pdf`);
+  toast('Master PDF downloaded!', 'success');
+}
+
+export async function generateMasterScientificReport(project, subTrials, options = {}) {
+  const { aiSummary = '' } = options;
+  toast('Generating Master Scientific Report…', 'info');
+  const doc = createDoc();
+  const pw = doc.internal.pageSize.getWidth();
+  const ph = doc.internal.pageSize.getHeight();
+
+  doc.setFillColor(...TEAL); doc.rect(0, 0, pw, 45, 'F');
+  doc.setTextColor(255, 255, 255);
+  doc.setFontSize(22); doc.setFont(undefined, 'bold');
+  doc.text('SCIENTIFIC STUDY MASTER REPORT', pw / 2, 22, { align: 'center' });
+  doc.setFontSize(12); doc.setFont(undefined, 'normal');
+  doc.text(`Master Workspace: ${project.Name}`, pw / 2, 34, { align: 'center' });
+  doc.setTextColor(0, 0, 0);
+  let y = 55;
+
+  // Summary metadata
+  const metaRows = [
+    ['Project / Study Name', project.Name, 'Target Crop', project.Crop || 'N/A'],
+    ['Investigator', project.Investigator || 'N/A', 'Location / Bounds', project.Location || 'N/A'],
+    ['Created Date', project.CreatedAt ? formatDate(project.CreatedAt) : 'N/A', 'Sub-Trials Count', String(subTrials.length)]
+  ];
+  autoTable(doc, {
+    startY: y, body: metaRows, theme: 'plain',
+    styles: { fontSize: 10, cellPadding: 2 },
+    columnStyles: { 0: { fontStyle: 'bold', cellWidth: 40 }, 2: { fontStyle: 'bold', cellWidth: 40 } }
+  });
+  y = (doc.lastAutoTable?.finalY ?? y) + 10;
+
+  // Executive summary
+  y = secHeading(doc, 'Executive Summary', y, ph);
+  const narrative = aiSummary || `This master scientific report aggregates findings from ${subTrials.length} Sub-Trial monitoring locations evaluated within the ${project.Name} area. Localized efficacy tracking, weed distribution timelines, and photographic logs were evaluated. Overall control profiles and species-specific responses are compiled below.`;
+  const narrativeLines = narrative.split('\n');
+  for (const rawLine of narrativeLines) {
+    const line = rawLine.trim();
+    if (!line) { y += 3; continue; }
+    const wrapped = doc.splitTextToSize(line, pw - 28);
+    if (y + wrapped.length * 5 > ph - 20) { doc.addPage(); y = 20; }
+    doc.setFontSize(10); doc.text(wrapped, 14, y); y += wrapped.length * 5 + 2;
+  }
+  y += 8;
+
+  // Comparative Efficacy Results Table
+  y = secHeading(doc, '1. Comparative Treatment Efficacy Matrix', y, ph);
+  const wceRows = [];
+  subTrials.forEach(st => {
+    const eff = validateEfficacy(safeJsonParse(st.EfficacyDataJSON, []));
+    const wces = calcWCE(eff);
+    wces.forEach(w => {
+      wceRows.push([
+        st.FormulationName || 'Untreated Check',
+        st.Replication || 'R1',
+        w.species,
+        w.initialCover.toFixed(1) + '%',
+        w.finalCover.toFixed(1) + '%',
+        w.wce.toFixed(1) + '%'
+      ]);
+    });
+  });
+
+  if (wceRows.length) {
+    autoTable(doc, {
+      startY: y,
+      head: [['Sub-Trial / Spot', 'Rep', 'Weed Species', 'Initial Cover', 'Final Cover', 'WCE %']],
+      body: wceRows,
+      headStyles: { fillColor: TEAL }, theme: 'striped', styles: { fontSize: 9 }
+    });
+    y = (doc.lastAutoTable?.finalY ?? y) + 10;
+  }
+
+  // Timeline per Sub-Trial
+  y = secHeading(doc, '2. Spatial & Temporal Observations', y, ph);
+  for (let i = 0; i < subTrials.length; i++) {
+    const st = subTrials[i];
+    if (y + 40 > ph - 20) { doc.addPage(); y = 20; }
+    doc.setFont(undefined, 'bold'); doc.setFontSize(11);
+    doc.text(`Sub-Trial: ${st.FormulationName || 'Untreated Check'} (${st.Replication || 'R1'})`, 14, y); y += 6;
+    doc.setFont(undefined, 'normal'); doc.setFontSize(10);
+
+    const eff = validateEfficacy(safeJsonParse(st.EfficacyDataJSON, []));
+    if (eff.length) {
+      autoTable(doc, {
+        startY: y,
+        head: [['DAA', 'Species', 'Status', 'Observation Notes']],
+        body: timelineRows(eff),
+        headStyles: { fillColor: DARK }, theme: 'striped', styles: { fontSize: 8 }
+      });
+      y = (doc.lastAutoTable?.finalY ?? y) + 8;
+    }
+  }
+
+  pdfAddFooter(doc, `Master study: ${project.Name}`);
+  doc.save(`Scientific_Master_Report_${safeName(project.Name)}.pdf`);
+  toast('Master Scientific Report downloaded!', 'success');
+}
+
+export async function generateMasterPpt(project, subTrials) {
+  toast('Generating Master PowerPoint…', 'info');
+  const pptx = new pptxgen();
+  pptx.layout = 'LAYOUT_16x9';
+
+  // Slide 1: Title
+  const s1 = pptx.addSlide();
+  s1.background = { color: '0D9488' };
+  s1.addText('MASTER FIELD TRIAL REPORT', { x: 0.5, y: 1.5, w: 9, h: 1.2, fontSize: 34, bold: true, color: 'FFFFFF', align: 'center' });
+  s1.addText(project.Name, { x: 0.5, y: 2.7, w: 9, h: 0.7, fontSize: 20, color: 'FFFFFF', align: 'center' });
+  s1.addText(`Crop: ${project.Crop || '—'} | Location: ${project.Location || '—'} | Investigator: ${project.Investigator || '—'}`, { x: 0.5, y: 3.5, w: 9, h: 0.5, fontSize: 13, color: 'E0F2F1', align: 'center' });
+
+  // Slide 2: Sub-Trials List
+  const s2 = pptx.addSlide();
+  s2.addText('Summary of Sub-Trials / Spots', { x: 0.4, y: 0.2, w: 9, h: 0.7, fontSize: 22, bold: true, color: '0D9488' });
+  const tableRows = [
+    [{ text: 'Sub-Trial Spot', options: { bold: true, color: 'FFFFFF', fill: { color: '0D9488' } } },
+     { text: 'Formulation', options: { bold: true, color: 'FFFFFF', fill: { color: '0D9488' } } },
+     { text: 'Dosage', options: { bold: true, color: 'FFFFFF', fill: { color: '0D9488' } } },
+     { text: 'Rep / Plot', options: { bold: true, color: 'FFFFFF', fill: { color: '0D9488' } } },
+     { text: 'Result', options: { bold: true, color: 'FFFFFF', fill: { color: '0D9488' } } }]
+  ];
+  subTrials.forEach(st => {
+    tableRows.push([
+      st.Location || 'Spot Coordinate',
+      st.FormulationName || 'Untreated Check',
+      st.Dosage || 'N/A',
+      `${st.Replication || 'R1'} / ${st.PlotNumber || 'N/A'}`,
+      st.Result || 'Pending'
+    ]);
+  });
+  s2.addTable(tableRows, { x: 0.4, y: 1.0, w: 9.2, fontSize: 11, colW: [2.5, 2.5, 1.4, 1.4, 1.4], border: { pt: 0.5, color: 'CBD5E1' } });
+
+  // Slide 3: WCE Comparison
+  const s3 = pptx.addSlide();
+  s3.addText('Weed Control Efficacy (WCE) Comparison', { x: 0.4, y: 0.2, w: 9, h: 0.7, fontSize: 22, bold: true, color: '0D9488' });
+  const wceHeader = [
+    { text: 'Sub-Trial', options: { bold: true, color: 'FFFFFF', fill: { color: '0D9488' } } },
+    { text: 'Weed Species', options: { bold: true, color: 'FFFFFF', fill: { color: '0D9488' } } },
+    { text: 'Initial Cover', options: { bold: true, color: 'FFFFFF', fill: { color: '0D9488' } } },
+    { text: 'Final Cover', options: { bold: true, color: 'FFFFFF', fill: { color: '0D9488' } } },
+    { text: 'WCE %', options: { bold: true, color: 'FFFFFF', fill: { color: '0D9488' } } }
+  ];
+  const wceRows = [wceHeader];
+  subTrials.forEach(st => {
+    const eff = validateEfficacy(safeJsonParse(st.EfficacyDataJSON, []));
+    const wces = calcWCE(eff);
+    wces.forEach(w => {
+      wceRows.push([
+        st.FormulationName || 'Untreated Check',
+        w.species,
+        w.initialCover.toFixed(1) + '%',
+        w.finalCover.toFixed(1) + '%',
+        w.wce.toFixed(1) + '%'
+      ]);
+    });
+  });
+  s3.addTable(wceRows, { x: 0.4, y: 1.0, w: 9.2, fontSize: 11, colW: [2.8, 2.2, 1.4, 1.4, 1.4], border: { pt: 0.5, color: 'CBD5E1' } });
+
+  // Slide 4: Unified Photos
+  const s4 = pptx.addSlide();
+  s4.addText('Field Photographs Summary', { x: 0.4, y: 0.2, w: 9, h: 0.6, fontSize: 22, bold: true, color: '0D9488' });
+  const pos = [[0.3, 0.9, 4.2, 3.0], [5.1, 0.9, 4.2, 3.0], [0.3, 4.1, 4.2, 3.0], [5.1, 4.1, 4.2, 3.0]];
+  let photoCount = 0;
+  for (let i = 0; i < subTrials.length; i++) {
+    const st = subTrials[i];
+    const photos = safeJsonParse(st.PhotoURLs, []);
+    if (photos.length && photoCount < 4) {
+      const src = photoSrc(photos[0]);
+      if (src) {
+        try {
+          const imgData = await toBase64(src, 600);
+          if (imgData) {
+            const [px, py, pw2, ph2] = pos[photoCount];
+            s4.addImage({ data: imgData, x: px, y: py, w: pw2, h: ph2 });
+            s4.addText(`${st.FormulationName || 'Untreated Check'} - ${photos[0].label || 'Latest'}`, { x: px, y: py + ph2 + 0.05, w: pw2, h: 0.3, fontSize: 9, color: '475569' });
+            photoCount++;
+          }
+        } catch { /* skip */ }
+      }
+    }
+  }
+
+  await pptx.writeFile({ fileName: `Master_Report_${safeName(project.Name)}.pptx` });
+  toast('Master PowerPoint downloaded!', 'success');
+}
+
+export function exportMasterCSV(project, subTrials) {
+  const header = ['Master Project', 'Sub-Trial ID', 'Formulation', 'Replication', 'Plot #', 'Location', 'Dosage', 'Result', 'DAA', 'Obs Date', 'Weed Species', 'Weed Cover %', 'Weed Status', 'Notes'];
+  const rows = [];
+  subTrials.forEach(st => {
+    const efficacy = validateEfficacy(safeJsonParse(st.EfficacyDataJSON, []));
+    if (efficacy.length) {
+      efficacy.forEach(obs => {
+        const details = obs.weedDetails?.length ? obs.weedDetails : [{ species: 'Total', cover: obs.weedCover ?? '' }];
+        details.forEach((wd, di) => {
+          rows.push([
+            project.Name,
+            di === 0 ? st.ID : '',
+            di === 0 ? st.FormulationName : '',
+            di === 0 ? st.Replication : '',
+            di === 0 ? st.PlotNumber : '',
+            di === 0 ? st.Location : '',
+            di === 0 ? st.Dosage : '',
+            di === 0 ? st.Result : '',
+            obs.daa ?? '',
+            obs.date || '',
+            wd.species || 'Total',
+            wd.cover ?? '',
+            wd.status || '',
+            obs.notes || ''
+          ]);
+        });
+      });
+    } else {
+      rows.push([project.Name, st.ID, st.FormulationName, st.Replication, st.PlotNumber, st.Location, st.Dosage, st.Result, '', '', '', '', '', '']);
+    }
+  });
+
+  const csv = [header, ...rows].map(r => r.map(c => `"${String(c ?? '').replace(/"/g, '""')}"`).join(',')).join('\n');
+  dlBlob(new Blob([csv], { type: 'text/csv' }), `Master_Study_Export_${safeName(project.Name)}.csv`);
+  toast('Master CSV exported!', 'success');
+}
+
+export function exportMasterHtml(project, subTrials) {
+  const subTrialRowsHtml = subTrials.map(st => {
+    const eff = validateEfficacy(safeJsonParse(st.EfficacyDataJSON, []));
+    const wces = calcWCE(eff);
+    const wceList = wces.map(w => `${w.species}: ${w.wce.toFixed(0)}%`).join(', ') || 'N/A';
+    return `<tr>
+      <td style="border:1px solid #cbd5e1;padding:6px;"><b>${st.FormulationName || 'Untreated Check'}</b></td>
+      <td style="border:1px solid #cbd5e1;padding:6px;">${st.Dosage || 'N/A'}</td>
+      <td style="border:1px solid #cbd5e1;padding:6px;">${st.Replication || 'R1'}</td>
+      <td style="border:1px solid #cbd5e1;padding:6px;">${st.Location || 'N/A'}</td>
+      <td style="border:1px solid #cbd5e1;padding:6px;">${st.Result || 'Pending'}</td>
+      <td style="border:1px solid #cbd5e1;padding:6px;">${wceList}</td>
+    </tr>`;
+  }).join('');
+
+  const html = `<!DOCTYPE html><html><head><meta charset="UTF-8"/>
+    <style>
+      body { font-family: 'Calibri', Arial, sans-serif; color: #1e293b; margin: 40px; }
+      h1 { font-size: 22pt; color: #0d9488; margin-bottom: 4px; }
+      p { margin: 4px 0; }
+      table { border-collapse: collapse; width: 100%; margin-top: 12px; }
+      th { background-color: #0d9488; color: white; border: 1px solid #cbd5e1; padding: 8px; text-align: left; }
+      td { border: 1px solid #cbd5e1; padding: 8px; }
+    </style>
+  </head><body>
+    <h1>Master Study Report: ${project.Name}</h1>
+    <p style="font-size:11pt;color:#475569;">Crop: ${project.Crop || 'N/A'} &nbsp;|&nbsp; Location: ${project.Location || 'N/A'} &nbsp;|&nbsp; Investigator: ${project.Investigator || 'N/A'}</p>
+
+    <h2 style="color:#0d9488;font-size:14pt;border-bottom:2px solid #0d9488;padding-bottom:4px;margin-top:24px;">Sub-Trials Overview</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>Sub-Trial Spot</th>
+          <th>Dosage</th>
+          <th>Rep</th>
+          <th>Location</th>
+          <th>Result</th>
+          <th>Weed Efficacy (WCE)</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${subTrialRowsHtml}
+      </tbody>
+    </table>
+
+    <p style="text-align:center;color:#94a3b8;font-size:9pt;margin-top:40px;">Generated ${new Date().toLocaleString()} — Herbicide Trial Manager</p>
+  </body></html>`;
+
+  dlBlob(new Blob([html], { type: 'text/html' }), `Master_Report_${safeName(project.Name)}.html`);
+  toast('Master HTML Report downloaded!', 'success');
+}
+
+export function exportMasterDocx(project, subTrials) {
+  const subTrialRowsHtml = subTrials.map(st => {
+    const eff = validateEfficacy(safeJsonParse(st.EfficacyDataJSON, []));
+    const wces = calcWCE(eff);
+    const wceList = wces.map(w => `${w.species}: ${w.wce.toFixed(0)}%`).join(', ') || 'N/A';
+    return `<tr>
+      <td style="border:1pt solid #cbd5e1;padding:4pt;"><b>${st.FormulationName || 'Untreated Check'}</b></td>
+      <td style="border:1pt solid #cbd5e1;padding:4pt;">${st.Dosage || 'N/A'}</td>
+      <td style="border:1pt solid #cbd5e1;padding:4pt;">${st.Replication || 'R1'}</td>
+      <td style="border:1pt solid #cbd5e1;padding:4pt;">${st.Location || 'N/A'}</td>
+      <td style="border:1pt solid #cbd5e1;padding:4pt;">${st.Result || 'Pending'}</td>
+      <td style="border:1pt solid #cbd5e1;padding:4pt;">${wceList}</td>
+    </tr>`;
+  }).join('');
+
+  const wordHtml = `<!DOCTYPE html>
+<html xmlns:o="urn:schemas-microsoft-com:office:office"
+      xmlns:w="urn:schemas-microsoft-com:office:word"
+      xmlns="http://www.w3.org/TR/REC-html40">
+<head>
+  <meta charset="UTF-8"/>
+  <style>
+    @page { size: A4; margin: 2.54cm; }
+    body { font-family: Calibri, Arial, sans-serif; font-size: 12pt; color: #1e293b; }
+    h1 { font-size: 18pt; color: #0d9488; }
+    h2 { font-size: 13pt; color: #0d9488; border-bottom: 1pt solid #0d9488; padding-bottom: 3pt; margin-top: 18pt; }
+    table { border-collapse: collapse; width: 100%; margin-bottom: 12pt; }
+    td, th { border: 1pt solid #cbd5e1; padding: 4pt 7pt; font-size: 10pt; }
+    th { background: #0d9488; color: #fff; font-weight: bold; }
+  </style>
+</head>
+<body>
+  <h1>Master Study Report: ${project.Name}</h1>
+  <p style="font-size:11pt;color:#475569;">Crop: ${project.Crop || 'N/A'} | Location: ${project.Location || 'N/A'} | Investigator: ${project.Investigator || 'N/A'}</p>
+
+  <h2>Sub-Trials Overview</h2>
+  <table>
+    <thead>
+      <tr>
+        <th style="background:#0d9488;color:#fff;">Sub-Trial Spot</th>
+        <th style="background:#0d9488;color:#fff;">Dosage</th>
+        <th style="background:#0d9488;color:#fff;">Rep</th>
+        <th style="background:#0d9488;color:#fff;">Location</th>
+        <th style="background:#0d9488;color:#fff;">Result</th>
+        <th style="background:#0d9488;color:#fff;">Weed Efficacy (WCE)</th>
+      </tr>
+    </thead>
+    <tbody>
+      ${subTrialRowsHtml}
+    </tbody>
+  </table>
+</body></html>`;
+
+  dlBlob(new Blob([wordHtml], { type: 'application/msword' }), `Master_Report_${safeName(project.Name)}.doc`);
+  toast('Master Word Document downloaded!', 'success');
+}
+
